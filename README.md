@@ -14,8 +14,8 @@ Invoke-LdapSearch               -   searchs for domain objects in a mounted Acti
 
 ## Requirements
 
-The Invoke-DCSync and Get-ADDatabase functions require a privileged access to Active Directory, typically domain admin righs.
-The Dump-ADDatabase and Mount-ADDatabase functions require local admin rights.
+The Invoke-DCSync and Get-ADDatabase functions require a privileged access to Active Directory, typically domain admin rights.
+The Dump-ADDatabase and Mount-ADDatabase functions require admin rights on the local computer.
 
 The Invoke-DCSync and Dump-ADDatabase functions must be launched on a computer with DSInternals PowerShell module installed. The output of these functions can be formatted using custom views provided by the DSInternals module to support different password cracking tools. The Utils.ps1 file contains a function `Add-DSAccountCustomViews` to add optional views 'SecretsDump' and 'SecretsDumpHistory'.
 
