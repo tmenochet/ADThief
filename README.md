@@ -6,6 +6,7 @@ ADThief is a PowerShell tool to exploit Active Directory database after compromi
 
 ```
 Invoke-DCSync                   -   extracts domain accounts from Active Directory domain controller, including password hashes
+Invoke-DirSync                  -   extracts confidential and RODC filtered attributes from Active Directory domain controller
 Get-DpapiBackupKey              -   extracts the DPAPI backup key from Active Directory domain controller
 Get-ADDatabase                  -   steals Active Directory database remotely
 Dump-ADDatabase                 -   dumps domain accounts from an offline Active Directory database, including password hashes
@@ -15,7 +16,7 @@ Get-LdapObject                  -   searchs for domain objects in a mounted Acti
 
 ## Requirements
 
-The functions `Invoke-DCSync`, `Get-DpapiBackupKey` and `Get-ADDatabase` require a privileged access to Active Directory, typically domain admin rights.
+The functions `Invoke-DCSync`, `Get-DpapiBackupKey`, `Invoke-DirSync` and `Get-ADDatabase` require a privileged access to Active Directory, typically domain admin rights.
 The functions `Dump-ADDatabase` and `Mount-ADDatabase` require admin rights on the local computer.
 
 The functions `Invoke-DCSync`, `Get-DpapiBackupKey` and `Dump-ADDatabase` must be launched on a computer with DSInternals PowerShell module installed. The output of these functions can be formatted using custom views provided by the DSInternals module to support different password cracking tools. The Utils.ps1 file contains a function `Add-DSAccountCustomViews` to add optional views 'SecretsDump' and 'SecretsDumpHistory'.
@@ -44,3 +45,4 @@ PS C:\> Umount-ADDatabase
 
 * https://blog.netspi.com/getting-started-wmi-weaponization-part-4/
 * https://github.com/MichaelGrafnetter/DSInternals
+* https://simondotsh.com/infosec/2022/07/11/dirsync.html

